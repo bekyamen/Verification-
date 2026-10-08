@@ -19,11 +19,12 @@ export const verifyUrlSchema = z.object({
 export const verifyManualSchema = z.object({
   provider: z.enum(["CBE", "TELEBIRR", "DASHEN", "AWASH", "BOA", "ZEMEN", "CBE_BIRR", "MPESA", "SIINQEE", "OTHER", "UNKNOWN"]),
   txnReference: z.string().min(3, "Transaction reference required"),
-  amount: z.number().positive("Amount is required"),
+  amount: z.number().positive().optional(),
   expectedAmount: z.number().positive().optional(),
   
   // Optional extension fields mapped safely
   receivingAccount: z.string().optional(),
+  receivingPhoneNumber: z.string().optional(),
   senderAccount: z.string().optional(),
   payerPhone: z.string().optional(),
 }).superRefine((data, ctx) => {

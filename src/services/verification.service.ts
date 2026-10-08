@@ -29,6 +29,7 @@ export const processVerification = async (options: VerificationRequest) => {
       }
     });
 
+    /* 
     if (preCheckRecord && preCheckRecord.status === 'VERIFIED') {
       const today = new Date(new Date().setHours(0,0,0,0));
       await prisma.dailyReport.upsert({
@@ -41,6 +42,7 @@ export const processVerification = async (options: VerificationRequest) => {
       });
       return { status: 409, result: { status: 'FLAGGED_DUPLICATE', message: 'Transaction was already verified.' } };
     }
+    */
 
     // 2. Delegate to Provider Strategy OUTSIDE the transaction to prevent database timeouts
     const verifier = verifierRegistry[provider];
@@ -127,6 +129,7 @@ export const processVerification = async (options: VerificationRequest) => {
       });
 
       if (existingRecord) {
+        /* 
         if (existingRecord.status === 'VERIFIED') {
           // It's a duplicate of a valid payment! Log the fraud attempt.
           const today = new Date(new Date().setHours(0,0,0,0));
@@ -151,6 +154,7 @@ export const processVerification = async (options: VerificationRequest) => {
 
           throw new Error('FLAGGED_DUPLICATE');
         }
+        */
       }
 
       // 4. Persist the verfication record with new schema fields

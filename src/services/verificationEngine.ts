@@ -83,22 +83,28 @@ export class CbeVerifier implements ProviderVerifier {
 // 2. Telebirr
 export class TelebirrVerifier implements ProviderVerifier {
   async verify(payload: VerificationRequest): Promise<ProviderVerificationResult> {
-    if (!payload.txnReference || !/^[A-Z0-9]{8,14}$/i.test(payload.txnReference)) {
+    const isUrl = payload.txnReference && (payload.txnReference.startsWith('http://') || payload.txnReference.startsWith('https://'));
+    if (!payload.txnReference || (!isUrl && !/^[A-Z0-9]{8,25}$/i.test(payload.txnReference))) {
        return { status: 'INVALID_RECEIPT', amountExtracted: payload.amount || 0, message: 'Invalid Telebirr reference format' };
     }
     try {
       const res = await verifyTelebirr(payload.txnReference);
       if (res) {
+         const parsedAmount = res.settledAmount ? parseFloat(res.settledAmount.replace(/,/g, '')) : 0;
          return {
             status: 'VERIFIED',
-            amountExtracted: res.settledAmount ? parseFloat(res.settledAmount.replace(/,/g, '')) : (payload.amount || 0),
+            amountExtracted: parsedAmount > 0 ? parsedAmount : (payload.amount || 0),
             payerName: res.payerName,
             receiverAccount: res.creditedPartyAccountNo
          };
       }
       return { status: 'FAILED_UPSTREAM', amountExtracted: 0, message: 'Telebirr scraping failed' };
     } catch (e: any) {
-      return { status: 'FAILED_UPSTREAM', amountExtracted: 0, message: e.message };
+      const isNotFound = e.statusCode === 404 || e.statusCode === 400 || (e.message && e.message.toLowerCase().includes('not found'));
+      if (isNotFound) {
+          return { status: 'INVALID_RECEIPT', amountExtracted: 0, message: e.message || 'Telebirr scraping failed' };
+      }
+      return { status: 'FAILED_UPSTREAM', amountExtracted: 0, message: e.message || 'Telebirr scraping failed' };
     }
   }
 }

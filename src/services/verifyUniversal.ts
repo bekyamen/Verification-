@@ -74,9 +74,11 @@ export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVeri
   const len = trimmedRef.length;
   const isNewCBE = isNewCbeReference(trimmedRef);
   const legacyCbeLink = extractLegacyCbeUrlData(trimmedRef);
+  const isTelebirrLink = trimmedRef.includes('telebirr') || trimmedRef.includes('apps.ethiotelecom.et');
+  const isTelebirrMP = /^MP[A-Z0-9]{10,25}$/i.test(trimmedRef);
 
   // ── Basic length check ──────────────────────────────────────────────────────
-  if (!isNewCBE && !legacyCbeLink && len !== 10 && len !== 12 && len !== 16) {
+  if (!isNewCBE && !legacyCbeLink && !isTelebirrLink && !isTelebirrMP && len !== 10 && len !== 12 && len !== 16) {
     return {
       success: false,
       error: 'Invalid reference length for automatic sorting.',
@@ -172,9 +174,9 @@ export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVeri
       return { success: true, data: result, httpStatus: 200, provider: 'CBE' };
     }
 
-    // ── CBE Birr & Telebirr (10 alphanumeric chars) ───────────────────────────
-    if (len === 10) {
-      if (!/^[A-Za-z0-9]{10}$/.test(trimmedRef)) {
+    // ── CBE Birr & Telebirr ───────────────────────────
+    if (len === 10 || isTelebirrLink || isTelebirrMP) {
+      if (!isTelebirrLink && !isTelebirrMP && !/^[A-Za-z0-9]{10}$/.test(trimmedRef)) {
         return {
           success: false,
           error: '10-character reference must be alphanumeric.',
@@ -184,12 +186,16 @@ export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVeri
       if (suffix) {
         return {
           success: false,
-          error: 'Suffix is not expected for 10-character transactions.',
+          error: 'Suffix is not expected for these transactions.',
           httpStatus: 400,
         };
       }
 
+      // If we have a phoneNumber, it's explicitly CBE Birr (or if it's 10-char but not definitively telebirr... handled below)
       if (phoneNumber) {
+        if (isTelebirrLink || isTelebirrMP) {
+           return { success: false, error: 'Telebirr does not require phone number here.', httpStatus: 400, provider: 'TELEBIRR' };
+        }
         const trimmedPhone = phoneNumber.trim();
         if (!trimmedPhone.startsWith('251') || trimmedPhone.length > 12 || trimmedPhone.length < 10) {
           return {

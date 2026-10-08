@@ -149,7 +149,7 @@ export const verifyManualPayload = async (req: AuthenticatedRequest, res: Respon
       txnReference: parsedParams.txnReference,
       amount: parsedParams.amount,
       expectedAmount: parsedParams.expectedAmount,
-      receivingAccount: parsedParams.receivingAccount,
+      receivingAccount: parsedParams.receivingAccount || parsedParams.receivingPhoneNumber,
       senderAccount: parsedParams.senderAccount,
       payerPhone: parsedParams.payerPhone,
       rawText: 'MANUAL_ENTRY'

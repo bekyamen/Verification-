@@ -35,9 +35,9 @@ export const dissectPayload = (input: string): NormalizedPayload => {
         normalized.txnReference = parsedUrl.searchParams.get('ref') || parsedUrl.searchParams.get('txnId') || '';
         normalized.receivingAccount = parsedUrl.searchParams.get('account') || parsedUrl.searchParams.get('to') || undefined;
       }
-      else if (urlText.includes('telebirr')) {
+      else if (urlText.includes('telebirr') || urlText.includes('ethiotelecom.et')) {
         normalized.provider = 'TELEBIRR';
-        normalized.txnReference = parsedUrl.searchParams.get('txId') || parsedUrl.searchParams.get('id') || '';
+        normalized.txnReference = parsedUrl.searchParams.get('txId') || parsedUrl.searchParams.get('id') || text;
       }
       else if (urlText.includes('dashen')) {
         normalized.provider = 'DASHEN';
@@ -158,7 +158,7 @@ export const dissectPayload = (input: string): NormalizedPayload => {
 
   if (upperText.includes('TELEBIRR') || upperText.includes('ETHIO TELECOM')) {
     normalized.provider = 'TELEBIRR';
-    if (!normalized.txnReference) normalized.txnReference = (upperText.match(/\b([A-Z0-9]{8,14})\b/))?.[0] || extractGenericRef(upperText);
+    if (!normalized.txnReference) normalized.txnReference = (upperText.match(/\b([A-Z0-9]{8,25})\b/))?.[0] || extractGenericRef(upperText);
     return normalized as NormalizedPayload;
   }
 
