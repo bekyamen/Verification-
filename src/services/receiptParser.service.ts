@@ -1,8 +1,6 @@
 import { createWorker } from 'tesseract.js';
 const pdfParse = require('pdf-parse');
 import { ExtractedReceiptData } from '../types';
-import jsQR from 'jsqr';
-const Jimp = require('jimp');
 
 export const parseRawText = (rawText: string): ExtractedReceiptData => {
   const normalizedText = rawText.toUpperCase().replace(/\s+/g, ' ');
@@ -45,13 +43,18 @@ export const parseRawText = (rawText: string): ExtractedReceiptData => {
   } 
   
   // Heuristics for Telebirr
-  else if (normalizedText.includes('TELEBIRR') || normalizedText.includes('ETHIO TELECOM')) {
+  else if (
+    normalizedText.includes('TELEBIRR') || 
+    normalizedText.includes('ETHIO TELECOM') ||
+    normalizedText.includes('TRANSACTION NUMBER') ||
+    normalizedText.includes('TRANSACTION TO') ||
+    normalizedText.includes('TRANSFER MONEY')
+  ) {
     provider = 'TELEBIRR';
-    // Telebirr transaction IDs are strictly 10 alphanumeric characters usually starting with something distinct
-    // e.g. "72AB3K9M21"
-    const telebirrMatch = normalizedText.match(/\b([A-Z0-9]{10})\b/);
+    // Telebirr transaction IDs are strictly 10 alphanumeric characters (MUST contain both letters and digits)
+    const telebirrMatch = normalizedText.match(/\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*[0-9])[A-Z0-9]{10}\b/);
     if (telebirrMatch) {
-      txnReference = telebirrMatch[1];
+      txnReference = telebirrMatch[0];
     }
     amount = extractAmount(normalizedText);
   }
@@ -78,53 +81,15 @@ export const parseFileBuffer = async (fileBuffer: Buffer, mimetype: string): Pro
     }
   }
 
-  // Fallback to Image OCR + QR Scan
+  // Fallback to Image OCR
   let worker = null;
   try {
-    let qrUrl = '';
-    try {
-      // Decode with Jimp and extract QR (Multi-pass approach for large/messy screenshots)
-      const image = await Jimp.read(fileBuffer);
-      
-      const tryDecode = (img: any): string | null => {
-        const imageData = {
-          data: new Uint8ClampedArray(img.bitmap.data),
-          width: img.bitmap.width,
-          height: img.bitmap.height
-        };
-        const code = jsQR(imageData.data, imageData.width, imageData.height, {
-          inversionAttempts: "attemptBoth"
-        });
-        return code ? code.data : null;
-      };
-
-      // Pass 1: Original
-      qrUrl = tryDecode(image) || '';
-      
-      // Pass 2: Grayscale and Increased Contrast
-      if (!qrUrl) {
-         qrUrl = tryDecode(image.clone().greyscale().contrast(0.5)) || '';
-      }
-
-      // Pass 3: Scaled down (helps jsQR if screenshot is massively taller/wider)
-      if (!qrUrl && image.bitmap.width > 800) {
-         qrUrl = tryDecode(image.clone().resize(800, Jimp.AUTO)) || '';
-      }
-      
-      if (!qrUrl && image.bitmap.height > 800) {
-          qrUrl = tryDecode(image.clone().resize(Jimp.AUTO, 800)) || '';
-      }
-
-    } catch (qrErr) {
-       // Silently ignore QR errors and continue to OCR
-    }
 
     worker = await createWorker('eng');
     const { data: { text } } = await worker.recognize(fileBuffer);
     await worker.terminate();
     
-    // Combine QR data (if any) with OCR text
-    const combinedText = qrUrl ? `${qrUrl}\n${text}` : text;
+    const combinedText = text;
     if (!combinedText || combinedText.trim().length === 0) {
       throw new Error("OCR yielded empty text");
     }

@@ -118,7 +118,7 @@ export const dissectPayload = (input: string): NormalizedPayload => {
 
   // App/SMS Message fallback for missing fields
   // e.g. ETB 500.00 debited from AHIMED NUREDIN KELIFA for BEREKET TEREFE AYELE-ETB-9374 on 12-Jan-2025
-  const smsMatch = rawCleanText.match(/debited from (.*?) for (.*?)-(?:ETB|CBE)-*(\d{4})(?: on ([\d-a-zA-Z]+))?/i);
+  const smsMatch = rawCleanText.match(/debited from (.*?) for (.*?)[-\s]+(?:ETB|CBE)-*(\d{4})(?:\s+on\s+([\d-a-zA-Z\s:,]+?))?(?=\s+with\b|\s+ID\b|\.|$)/i);
   if (smsMatch) {
       if (!normalized.payerName) normalized.payerName = smsMatch[1].trim();
       if (!normalized.receivingAccount) normalized.receivingAccount = smsMatch[3];
@@ -156,9 +156,9 @@ export const dissectPayload = (input: string): NormalizedPayload => {
     return normalized as NormalizedPayload;
   }
 
-  if (upperText.includes('TELEBIRR') || upperText.includes('ETHIO TELECOM')) {
+  if (upperText.includes('TELEBIRR') || upperText.includes('ETHIO TELECOM') || upperText.includes('TRANSACTION TO') || upperText.includes('TRANSFER MONEY') || upperText.includes('TRANSACTION NUMBER')) {
     normalized.provider = 'TELEBIRR';
-    if (!normalized.txnReference) normalized.txnReference = (upperText.match(/\b([A-Z0-9]{8,25})\b/))?.[0] || extractGenericRef(upperText);
+    if (!normalized.txnReference) normalized.txnReference = extractGenericRef(upperText);
     return normalized as NormalizedPayload;
   }
 
@@ -196,14 +196,28 @@ export const dissectPayload = (input: string): NormalizedPayload => {
   return normalized as NormalizedPayload;
 };
 
+const STOP_WORDS = new Set([
+  'RECEIPT', 'SUCCESS', 'TRANSACTION', 'AMOUNT', 'COMPLETED', 
+  'SUMMARY', 'DEBITED', 'CREDITED', 'COMMERCIAL', 'ETHIOPIA', 
+  'BRANCH', 'TRANSFER', 'REASON', 'SERVICE', 'CHARGE', 'DISASTER'
+]);
+
 function extractGenericRef(text: string): string {
     const rx = /\b([A-Z0-9]{6,16})\b/g;
     let match;
     const candidates = [];
+    
     while ((match = rx.exec(text)) !== null) {
-        if (!/^\d+$/.test(match[1])) {
-           candidates.push(match[1]);
+        const word = match[1];
+        // Strict safety check: Transaction references in Ethiopia are virtually always Alphanumeric.
+        // It MUST contain at least one digit AND at least one letter. 
+        // This completely prevents it from accidentally picking up normal English words like "COMPANY".
+        if (/[0-9]/.test(word) && /[A-Z]/.test(word)) {
+           candidates.push(word);
         }
     }
-    return candidates.length > 0 ? candidates[0] : (text.match(/\b([A-Z0-9]{6,16})\b/)?.[1] || '');
+    
+    if (candidates.length > 0) return candidates[0];
+    
+    return '';
 }

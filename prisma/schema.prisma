@@ -45,12 +45,14 @@ model User {
   fullName       String
   phone          String   @unique
   passwordHash   String
-  pinCode        String?  // Hashed or encrypted 4-digit string for cashiers
+  pinCode        String? // Hashed or encrypted 4-digit string for cashiers
   role           Role     @default(CASHIER)
   createdAt      DateTime @default(now())
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  branch       Branch?      @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch          Branch?                 @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  createdAccounts BankSettlementAccount[] @relation("CreatedAccounts")
+  updatedAccounts BankSettlementAccount[] @relation("UpdatedAccounts")
 }
 
 enum BankName {
@@ -66,8 +68,15 @@ model BankSettlementAccount {
   bankName          BankName
   accountNumber     String
   accountHolderName String
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  createdById       String?
+  updatedById       String?
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("CreatedAccounts", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy    User?        @relation("UpdatedAccounts", fields: [updatedById], references: [id], onDelete: SetNull)
 }
 
 enum Provider {

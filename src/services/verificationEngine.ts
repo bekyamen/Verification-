@@ -15,87 +15,96 @@ export interface VerificationRequest extends NormalizedPayload {
   receiptUrl?: string;
   receiptImageUrl?: string;
   printedDate?: Date;
+  expectedReceiverAccount?: string;
+  registeredAccounts?: import('@prisma/client').BankSettlementAccount[];
 }
 
 export interface ProviderVerificationResult {
-  status: 'VERIFIED' | 'FAILED_UPSTREAM' | 'INVALID_RECEIPT' | 'AMOUNT_MISMATCH' | 'NEEDS_SUFFIX';
+  status: 'VERIFIED' | 'FAILED_UPSTREAM' | 'INVALID_RECEIPT' | 'AMOUNT_MISMATCH' | 'NEEDS_SUFFIX' | 'NEEDS_INPUT';
   amountExtracted: number;
   payerName?: string;
   message?: string;
+  code?: string;
   receiverAccount?: string;
   date?: Date;
+  reference?: string;
 }
 
 export interface ProviderVerifier {
   verify(payload: VerificationRequest): Promise<ProviderVerificationResult>;
 }
 
-// 1. CBE
-export class CbeVerifier implements ProviderVerifier {
+import { CbeVerifier } from './cbeVerifier';
+
+export class TelebirrVerifier implements ProviderVerifier {
   async verify(payload: VerificationRequest): Promise<ProviderVerificationResult> {
-    if (!payload.txnReference) {
-      return { status: 'INVALID_RECEIPT', amountExtracted: payload.amount || 0, message: 'Invalid CBE FT Reference format' };
-    }
-    
-    let suffix = payload.receivingAccount && payload.receivingAccount.length >= 8 
-                 ? payload.receivingAccount.slice(-8) 
-                 : undefined;
-                 
-    // Look for embedded CBE receipt URL token in either rawText or receiptUrl
-    const embeddedTokenMatch = (payload.rawText || '').match(/https?:\/\/(?:mbreciept|mbreceipt)\.cbe\.com\.et\/([A-Za-z0-9-]+)/i) 
-                            || (payload.receiptUrl || '').match(/https?:\/\/(?:mbreciept|mbreceipt)\.cbe\.com\.et\/([A-Za-z0-9-]+)/i);
-    const referenceToVerify = embeddedTokenMatch ? embeddedTokenMatch[1] : payload.txnReference;
-
-    const isToken = !!embeddedTokenMatch || referenceToVerify.length > 20;
-
-    if (!isToken && !suffix) {
-        return { 
-           status: 'NEEDS_SUFFIX', 
-           amountExtracted: payload.amount || 0, 
-           message: 'Legacy CBE FT reference requires the last 8 digits of the receiver account. Please enter manually.' 
+    const registeredAccounts = payload.registeredAccounts || [];
+    if (registeredAccounts.length === 0) {
+        return {
+            status: 'INVALID_RECEIPT',
+            amountExtracted: 0,
+            message: 'No registered Telebirr accounts found for this organization. Cannot verify.'
         };
     }
 
-    try {
-      const res = await verifyCBE(referenceToVerify, suffix);
-      if (res.success) {
-         return {
-            status: 'VERIFIED',
-            amountExtracted: res.amount || payload.amount || 0,
-            payerName: res.payer || undefined,
-            receiverAccount: res.receiverAccount || undefined,
-            date: res.date || undefined
-         };
-      }
-      if (res.statusCode === 400 && res.error?.includes('8-digit')) {
-         return { status: 'NEEDS_SUFFIX', amountExtracted: 0, message: res.error };
-      }
-      if (res.statusCode === 400 || res.statusCode === 404) {
-         return { status: 'INVALID_RECEIPT', amountExtracted: 0, message: res.error };
-      }
-      return { status: 'FAILED_UPSTREAM', amountExtracted: 0, message: res.error };
-    } catch (e: any) {
-      return { status: 'FAILED_UPSTREAM', amountExtracted: 0, message: e.message };
-    }
-  }
-}
-
-// 2. Telebirr
-export class TelebirrVerifier implements ProviderVerifier {
-  async verify(payload: VerificationRequest): Promise<ProviderVerificationResult> {
     const isUrl = payload.txnReference && (payload.txnReference.startsWith('http://') || payload.txnReference.startsWith('https://'));
     if (!payload.txnReference || (!isUrl && !/^[A-Z0-9]{8,25}$/i.test(payload.txnReference))) {
        return { status: 'INVALID_RECEIPT', amountExtracted: payload.amount || 0, message: 'Invalid Telebirr reference format' };
     }
+    
     try {
       const res = await verifyTelebirr(payload.txnReference);
       if (res) {
          const parsedAmount = res.settledAmount ? parseFloat(res.settledAmount.replace(/,/g, '')) : 0;
+         const receiverPhone = res.creditedPartyAccountNo;
+         
+         // Try to find a matching registered account
+         let matchedAccount: typeof registeredAccounts[0] | undefined;
+         const escapedReceiver = receiverPhone.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+         // We do not anchor with ^ and $ for phones because of +251, 251, 0 prefixes
+         const maskRegex = new RegExp(escapedReceiver.replace(/\*/g, '.*'), 'i');
+
+         for (const acc of registeredAccounts) {
+             const accountDigits = acc.accountNumber;
+             const expectedPhoneSafe = accountDigits.slice(-9); // standard format without prefix
+             const receivedPhoneSafe = receiverPhone.slice(-9);
+
+             if (
+                 receivedPhoneSafe.includes(expectedPhoneSafe) || 
+                 expectedPhoneSafe.includes(receivedPhoneSafe) || 
+                 maskRegex.test(accountDigits) ||
+                 maskRegex.test(expectedPhoneSafe)
+             ) {
+                 matchedAccount = acc;
+                 break;
+             }
+         }
+
+         if (!matchedAccount) {
+             return {
+                 status: 'INVALID_RECEIPT',
+                 amountExtracted: 0,
+                 message: `Receiver account mismatch. Received phone ${receiverPhone} did not match any registered Telebirr accounts.`
+             };
+         }
+
+         let warningMessage: string | undefined;
+         const rName = (res.creditedPartyName || '').toUpperCase();
+         const aName = matchedAccount.accountHolderName.toUpperCase();
+         const rWords = rName.split(/\s+/).filter((w: string) => w.length > 2);
+         const aWords = aName.split(/\s+/).filter((w: string) => w.length > 2);
+         const sharesName = rWords.some((w: string) => aWords.includes(w)) || aWords.some((w: string) => rWords.includes(w));
+         
+         if (!sharesName && rName && aName) {
+             warningMessage = `Warning: Receiver name on receipt (${res.creditedPartyName}) does not closely match registered account holder (${matchedAccount.accountHolderName}).`;
+         }
+
          return {
             status: 'VERIFIED',
             amountExtracted: parsedAmount > 0 ? parsedAmount : (payload.amount || 0),
             payerName: res.payerName,
-            receiverAccount: res.creditedPartyAccountNo
+            receiverAccount: res.creditedPartyAccountNo,
+            message: warningMessage
          };
       }
       return { status: 'FAILED_UPSTREAM', amountExtracted: 0, message: 'Telebirr scraping failed' };

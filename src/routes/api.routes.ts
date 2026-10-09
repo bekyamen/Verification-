@@ -41,4 +41,12 @@ router.get('/reports/daily', requireAuth, async (req: AuthenticatedRequest, res:
   }
 });
 
+// Settings Endpoints
+import { getOrganizationAccounts, registerAccount, toggleAccountStatus } from '../controllers/accounts.controller';
+import { requireManager } from '../middleware/auth.middleware';
+
+router.get('/settings/accounts', requireAuth, getOrganizationAccounts);
+router.post('/settings/accounts', requireAuth, requireManager, registerAccount);
+router.patch('/settings/accounts/:id/toggle', requireAuth, requireManager, toggleAccountStatus);
+
 export default router;

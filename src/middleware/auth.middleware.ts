@@ -23,6 +23,20 @@ export const requireAuth = (req: AuthenticatedRequest, res: Response, next: Next
   }
 };
 
+export const requireManager = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  if (!req.user) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  
+  if (req.user.role !== 'MANAGER' && req.user.role !== 'OWNER') {
+    res.status(403).json({ error: 'Forbidden: Requires manager or owner privileges.' });
+    return;
+  }
+  
+  next();
+};
+
 export const requireCashierPIN = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   const pin = req.headers['x-cashier-pin'] as string;
   const branchId = req.headers['x-branch-id'] as string;

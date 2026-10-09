@@ -28,15 +28,7 @@ export const verifyManualSchema = z.object({
   senderAccount: z.string().optional(),
   payerPhone: z.string().optional(),
 }).superRefine((data, ctx) => {
-  if (data.provider === 'CBE') {
-    if (!data.receivingAccount || data.receivingAccount.length < 10) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['receivingAccount'],
-        message: 'CBE payments require a receiving account of at least 10 digits.'
-      });
-    }
-  }
+  // CBE receiver accounts are automatically pulled via the registered BankSettlementAccount so we don't enforce validation here
 
   if (data.provider === 'BOA') {
     if (!data.senderAccount || data.senderAccount.length < 5) {

@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { AuthenticatedRequest } from '../types';
 import { verifyTextSchema, verifyUrlSchema, verifyManualSchema } from '../validators/verification.validator';
 import { parseRawText, parseFileBuffer, scrapeURLSession } from '../services/receiptParser.service';
+import { decodeReceiptQr } from '../services/qrDecoder';
 import { processVerification } from '../services/verification.service';
 import { dissectPayload } from '../services/linkDissector';
 
@@ -60,9 +61,13 @@ export const verifyImagePayload = async (req: AuthenticatedRequest, res: Respons
 
     const extractedOld = await parseFileBuffer(req.file.buffer, req.file.mimetype);
     
+    // Explicitly scan for QR to solve PDF / missing QR bugs
+    const manualQr = await decodeReceiptQr(req.file.buffer, req.file.mimetype);
+    const combinedRawText = [manualQr, extractedOld.rawText].filter(Boolean).join('\n');
+    
     // Pass the underlying OCR string through the dissector for robust extraction
-    const normalized = extractedOld.rawText 
-      ? dissectPayload(extractedOld.rawText) 
+    const normalized = combinedRawText 
+      ? dissectPayload(combinedRawText) 
       : { 
           provider: extractedOld.provider, 
           txnReference: extractedOld.txnReference || '',
@@ -83,7 +88,7 @@ export const verifyImagePayload = async (req: AuthenticatedRequest, res: Respons
       payerPhone: normalized.payerPhone,
       payerName: normalized.payerName,
       printedDate: normalized.printedDate,
-      rawText: extractedOld.rawText,
+      rawText: combinedRawText,
       // Siinqee fallback proof if it's an image
       receiptImageUrl: 'UPLOADED_FILE_PROOF'
     });

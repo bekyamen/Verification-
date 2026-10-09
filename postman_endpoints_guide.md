@@ -1,133 +1,115 @@
-# CheckFlow ET Backend API - Postman Testing Guide
+import axios from 'axios';
+import logger from '../utils/logger';
 
-Here is the complete list of APIs available in your backend, formatted with the exact headers and body payloads you need to test them in Postman.
+export interface VerifyResult {
+  success: boolean;
+  payer?: string;
+  payerAccount?: string;
+  receiver?: string;
+  receiverAccount?: string;
+  amount?: number;
+  date?: Date;
+  reference?: string;
+  reason?: string | null;
+  error?: string;
+  statusCode?: number;
+}
 
-> [!NOTE] 
-> **Base URL**: Set your Postman base URL to `http://localhost:5000` (or whatever port your server runs on).
+const CHECK_URL = 'https://api.check.et/api/v1/verify';
+const RECEIPT_TOKEN = /^v2-[A-Za-z0-9]+$/i;      // token from the QR: https://mbreciept.cbe.com.et/<token>
+const FT_REF = /^FT\d{5}[A-Z0-9]{5}$/i;
+const ACCOUNT_LENGTH = 13;
 
----
-
-## 1. Authentication Endpoints
-
-
-### Register User
-**POST** `/api/auth/register`
-* **Headers**: `Content-Type: application/json`
-* **Body**:
-  ```json
-  {
-    "fullName": "Abebe Kebede",
-    "phone": "0911223344",
-    "pinCode": "1234",
-    "accountType": "BUSINESS" // Can be "BUSINESS" or "PERSONAL"
+const pick = (o: any, keys: string[]) => {
+  for (const k of keys) if (o?.[k] !== undefined && o[k] !== null && o[k] !== '') return o[k];
+  return undefined;
+};
+const toNumber = (v: unknown): number | undefined => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
+  if (typeof v === 'string') {
+    const n = parseFloat(v.replace(/,/g, ''));
+    return Number.isFinite(n) ? n : undefined;
   }
-  ```
-_Note: On successful registration, it returns user details (including the `branchId`) and a token. Save the `branchId` for the verification headers later!_
+  return undefined;
+};
+const toDate = (v: unknown): Date | undefined => {
+  if (!v) return undefined;
+  const d = new Date(v as any);
+  return Number.isNaN(d.getTime()) ? undefined : d;          // NEVER default to "now"
+};
 
-### Login User
-**POST** `/api/auth/login`
-* **Headers**: `Content-Type: application/json`
-* **Body**:
-  ```json
-  {
-    "phone": "0911223344",
-    "pinCode": "1234"
-  }
-
-  ```
-_Note: In Postman, save the generated JWT token to use in the Authorization header for reports._
-
----
-
-## 2. Verification Endpoints (Cashier Actions)
-
-> [!IMPORTANT]
-> All verification endpoints require these two headers to authenticate shared counter tablets:
-> - `x-cashier-pin`: e.g. `1234`
-> - `x-branch-id`: The `branchId` GUID you got from login/registration
-
-### Verify via Text Payload (SMS/USSD)
-**POST** `/api/verify/text`
-* **Headers**: 
-  - `x-cashier-pin`: `1234`
-  - `x-branch-id`: `YOUR_BRANCH_ID`
-  - `Content-Type`: `application/json`
-* **Body**: 
-  ```json
-
-  {
-    "rawText": "Sent 500 ETB to...",
-    "expectedAmount": 500 // Optional
+/**
+ * reference: a receipt URL, a QR token (v2-...), or an FT reference.
+ * accountNumber: the FULL 13-digit receiving account (required for FT references only).
+ */
+export async function verifyCBE(reference: string, accountNumber?: string): Promise<VerifyResult> {
+  const apiKey = process.env.CHECK_API_KEY;
+  if (!apiKey) {
+    logger.error('CHECK_API_KEY is not set');
+    return { success: false, error: 'Verification service is not configured.', statusCode: 503 };
   }
 
-  ```
+  const ref = reference.trim();
+  const body: Record<string, string> = { bank: 'cbe' };
 
-### Verify via Image/PDF (Receipt Upload)
-**POST** `/api/verify/image`
-* **Headers**:
-  - `x-cashier-pin`: `1234`
-  - `x-branch-id`: `YOUR_BRANCH_ID`
-* **Body (form-data)**: 
-  Choose `multipart/form-data` (or standard `form-data` tab) in Postman.
-  - Key: `receipt` (Type: **File**), Value: Select an image or PDF.
-  - Key: `expectedAmount` (Type: **Text**), Value: `500` (Optional)
-
-### Verify via URL
-**POST** `/api/verify/url`
-* **Headers**:
-  - `x-cashier-pin`: `1234`
-  - `x-branch-id`: `YOUR_BRANCH_ID`
-  - `Content-Type`: `application/json`
-* **Body**:
-  ```json
-  {
-    "receiptUrl": "http://example.com/some/receipt/link",
-    "expectedAmount": 500 // Optional
+  if (/^https?:\/\//i.test(ref)) {
+    body.receipt_url = ref;
+  } else if (RECEIPT_TOKEN.test(ref)) {
+    body.receipt_url = `https://mbreciept.cbe.com.et/${ref}`;
+  } else if (FT_REF.test(ref)) {
+    const acct = (accountNumber ?? '').replace(/\D/g, '');
+    if (acct.length !== ACCOUNT_LENGTH) {
+      return { success: false, error: `A full ${ACCOUNT_LENGTH}-digit receiver account is required.`, statusCode: 400 };
+    }
+    body.transaction_number = ref.toUpperCase();
+    body.account_number = acct;
+  } else {
+    return { success: false, error: 'Unrecognised CBE reference.', statusCode: 400 };
   }
 
-  ```
+  try {
+    logger.info(`Forwarding CBE verification to api.check.et (${body.receipt_url ? 'receipt_url' : 'reference+account'})`);
+    const { data } = await axios.post(CHECK_URL, body, {
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      timeout: 30000
+    });
 
-  
+    // TEMPORARY: log one real response per receipt type, then pin the exact field names below.
+    if (process.env.LOG_CHECK_RAW === '1') logger.info(`[check.et raw] ${JSON.stringify(data)}`);
 
-### Verify via Manual Data Entry
-**POST** `/api/verify/manual`
-* **Headers**:
-  - `x-cashier-pin`: `1234`
-  - `x-branch-id`: `YOUR_BRANCH_ID`
-  - `Content-Type`: `application/json`
-* **Body**:
-  ```json
-  {
-    "provider": "CBE", 
-    "txnReference": "FT123456789",
-    "amount": 500,
-    "expectedAmount": 500, // Optional
-    "receivingAccount": "1000123456789",
-    "senderAccount": "",
-    "payerPhone": ""
+    const d = data?.data ?? data;
+
+    // A 2xx is not proof of a valid payment: honour the API's own verdict.
+    if (data?.success === false || data?.verified === false || d?.verified === false) {
+      return { success: false, error: pick(data, ['error', 'message']) ?? 'Receipt could not be verified.', statusCode: 404 };
+    }
+
+    const amount = toNumber(pick(d, ['amount', 'settledAmount', 'transferredAmount']));
+    if (amount === undefined) {
+      logger.warn('check.et response had no usable amount');
+      return { success: false, error: 'Unexpected response from verification service.', statusCode: 502 };
+    }
+
+    return {
+      success: true,
+      payer: pick(d, ['payerName', 'payer_name', 'payer']),
+      payerAccount: pick(d, ['payerAccount', 'payer_account', 'sender_account']),
+      receiver: pick(d, ['receiverName', 'receiver_name', 'receiver']),
+      // do NOT fall back to `account_number`: it may just echo the value we sent
+      receiverAccount: pick(d, ['receiverAccount', 'receiver_account']),
+      amount,
+      date: toDate(pick(d, ['date', 'paymentDate', 'dateTime'])),
+      reference: pick(d, ['transaction_number', 'reference', 'receiptNo']),
+      reason: pick(d, ['reason', 'customerNote']) ?? null
+    };
+  } catch (error: any) {
+    const status: number | undefined = error.response?.status;
+    const msg = error.response?.data?.error ?? error.response?.data?.message ?? error.message;
+    logger.warn(`api.check.et failed (${status ?? 'no response'}): ${msg}`);
+
+    if (status === 401 || status === 403) {
+      return { success: false, error: 'Verification service credentials were rejected.', statusCode: 503 };
+    }
+    return { success: false, error: msg, statusCode: status };
   }
-  ```
-> [!TIP]
-> **Validation Rules for Manual Data Entry:**
-> - **`provider`** MUST be one of: `"CBE", "TELEBIRR", "DASHEN", "AWASH", "BOA", "ZEMEN", "CBE_BIRR", "MPESA", "SIINQEE", "OTHER", "UNKNOWN"`
-> - **`receivingAccount`**: Required for `CBE`, must be at least 10 digits.
-> - **`senderAccount`**: Required for `BOA`, must be at least 5 digits.
-> - **`payerPhone`**: Required for `CBE_BIRR`, must start with `251`.
-
-
----
-
-## 3. Manager/Owner Reports
-
-### Daily Excel Report Download
-**GET** `/api/reports/daily`
-* **Headers**: 
-  - `Authorization`: `Bearer <YOUR_JWT_TOKEN>`
-
----
-
-## 4. Others
-
-### Health Check (No Auth needed)
-**GET** `/api/health`
-
+}

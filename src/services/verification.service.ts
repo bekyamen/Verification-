@@ -50,7 +50,50 @@ export const processVerification = async (options: VerificationRequest) => {
         throw new Error('No verifier found for provider');
     }
 
-    const providerResult = await verifier.verify(options);
+    const branch = await prisma.branch.findUnique({
+       where: { id: branchId },
+       include: { organization: { include: { bankSettlementAccounts: { where: { isActive: true } } } } }
+    });
+    
+    let registeredAccounts: any[] = [];
+    if (branch && branch.organization) {
+        registeredAccounts = branch.organization.bankSettlementAccounts.filter((a) => {
+            if (provider === 'CBE' && a.bankName === 'CBE') return true;
+            if (provider === 'TELEBIRR' && a.bankName === 'TELEBIRR') return true;
+            if (provider === 'BOA' && a.bankName === 'BOA') return true;
+            if (provider === 'AWASH' && a.bankName === 'AWASH') return true;
+            return false;
+        });
+    }
+
+    if (['CBE', 'TELEBIRR', 'BOA', 'AWASH'].includes(provider) && registeredAccounts.length === 0) {
+        return {
+            status: 422,
+            result: {
+                status: 'INVALID_RECEIPT',
+                message: `No active registered receiving accounts found for provider ${provider}. Verification cannot proceed.`,
+                provider,
+                txnReference
+            }
+        };
+    }
+
+    const providerResult = await verifier.verify({ ...options, registeredAccounts });
+    
+    if (providerResult.status === 'NEEDS_INPUT') {
+      return { 
+        status: 422, 
+        result: { 
+          status: 'NEEDS_INPUT', 
+          code: providerResult.code, 
+          message: providerResult.message,
+          provider, 
+          txnReference: providerResult.reference ?? txnReference 
+        } 
+      };
+    }
+
+    const canonicalRef = providerResult.reference ?? txnReference;
     
     let finalStatus = providerResult.status;
     const finalAmount = providerResult.amountExtracted;
@@ -64,46 +107,40 @@ export const processVerification = async (options: VerificationRequest) => {
     // Validate strict safety checks BEFORE creating the record
     if (finalStatus === 'VERIFIED') {
       try {
-        const branch = await prisma.branch.findUnique({
-           where: { id: branchId },
-           include: { organization: { include: { bankSettlementAccounts: true } } }
-        });
-        
         if (provider === 'CBE') {
-           const cbeAccount = branch?.organization.bankSettlementAccounts.find(a => a.bankName === 'CBE');
-           if (cbeAccount && providerResult.receiverAccount) {
-              if (!providerResult.receiverAccount.includes(cbeAccount.accountNumber) && !cbeAccount.accountNumber.includes(providerResult.receiverAccount)) {
-                 finalStatus = 'INVALID_RECEIPT';
-                 providerResult.message = `Receiver account mismatch. Expected ${cbeAccount.accountNumber} but got ${providerResult.receiverAccount}`;
+           if (finalStatus === 'VERIFIED') {
+              const ftMatch = canonicalRef.match(/^FT(\d{2})(\d{3})/i);
+              let refDate: Date | null = null;
+              if (ftMatch) {
+                 const year = 2000 + parseInt(ftMatch[1], 10);
+                 const dayOfYear = parseInt(ftMatch[2], 10);
+                 refDate = new Date(year, 0); // Jan 1st
+                 refDate.setDate(dayOfYear);
               }
-           }
+              const targetDate = refDate || providerResult.date;
 
-           if (finalStatus === 'VERIFIED' && providerResult.date) {
-              const timeDiff = Math.abs(Date.now() - providerResult.date.getTime());
-              const daysDiff = timeDiff / (1000 * 3600 * 24);
-              if (daysDiff > 2) {
-                 finalStatus = 'INVALID_RECEIPT';
-                 providerResult.message = `Receipt is too old. Date reported: ${providerResult.date.toISOString()}`;
-              }
+              if (targetDate) {
+                  const todayMidnight = new Date();
+                  todayMidnight.setHours(0,0,0,0);
+                  const targetMidnight = new Date(targetDate);
+                  targetMidnight.setHours(0,0,0,0);
+                  const daysDiff = Math.abs(todayMidnight.getTime() - targetMidnight.getTime()) / (1000 * 3600 * 24);
+                  
+                  const maxAge = Number(process.env.RECEIPT_MAX_AGE_DAYS ?? 2);
+                  if (daysDiff > maxAge) {
+                     finalStatus = 'INVALID_RECEIPT';
+                     providerResult.message = `Receipt is older than ${maxAge} days.`;
+                  }
    
-              if (options.printedDate) {
-                 const printedDiff = Math.abs(options.printedDate.getTime() - providerResult.date.getTime());
-                 const printedDaysDiff = printedDiff / (1000 * 3600 * 24);
-                 if (printedDaysDiff > 1.5) {
-                    finalStatus = 'INVALID_RECEIPT';
-                    providerResult.message = 'The date printed on the receipt does not match the actual transaction date.';
-                 }
-              }
-           }
-        } else if (provider === 'TELEBIRR') {
-           const tbAccount = branch?.organization.bankSettlementAccounts.find(a => a.bankName === 'TELEBIRR');
-           if (tbAccount && providerResult.receiverAccount) {
-              const expectedPhoneSafe = tbAccount.accountNumber.slice(-9);
-              const receivedPhoneSafe = providerResult.receiverAccount.slice(-9);
-              
-              if (!receivedPhoneSafe.includes(expectedPhoneSafe) && !expectedPhoneSafe.includes(receivedPhoneSafe)) {
-                 finalStatus = 'INVALID_RECEIPT';
-                 providerResult.message = `Receiver phone mismatch. Expected ${tbAccount.accountNumber} but got ${providerResult.receiverAccount}`;
+                  if (options.printedDate) {
+                     const printedMidnight = new Date(options.printedDate);
+                     printedMidnight.setHours(0,0,0,0);
+                     const printedDaysDiff = Math.abs(printedMidnight.getTime() - targetMidnight.getTime()) / (1000 * 3600 * 24);
+                     if (printedDaysDiff > 1) {
+                        finalStatus = 'INVALID_RECEIPT';
+                        providerResult.message = 'The date printed on the receipt does not match the actual transaction date.';
+                     }
+                  }
               }
            }
         }
@@ -112,7 +149,11 @@ export const processVerification = async (options: VerificationRequest) => {
       }
     }
 
-    let dbStatus = finalStatus === 'NEEDS_SUFFIX' ? 'INVALID_RECEIPT' : finalStatus;
+    if (finalStatus === 'NEEDS_SUFFIX') {
+       return { status: 400, result: { status: 'NEEDS_SUFFIX', message: providerResult.message || 'Legacy CBE FT reference requires the last 8 digits of the receiver account. Please enter manually.' } };
+    }
+
+    let dbStatus = finalStatus;
 
     // Utilize Prisma Interactive Transaction to guarantee database-level concurrency protection
     const result = await prisma.$transaction(async (tx) => {
@@ -123,7 +164,7 @@ export const processVerification = async (options: VerificationRequest) => {
           branchId_provider_txnReference: {
             branchId,
             provider,
-            txnReference
+            txnReference: canonicalRef
           }
         }
       });
@@ -159,7 +200,7 @@ export const processVerification = async (options: VerificationRequest) => {
 
       // 4. Persist the verfication record with new schema fields
       const record = await tx.verificationRecord.upsert({
-        where: { branchId_provider_txnReference: { branchId, provider, txnReference } },
+        where: { branchId_provider_txnReference: { branchId, provider, txnReference: canonicalRef } },
         update: {
           amount: new Prisma.Decimal(finalAmount),
           expectedAmount: expectedAmount ? new Prisma.Decimal(expectedAmount) : null,
@@ -171,13 +212,13 @@ export const processVerification = async (options: VerificationRequest) => {
           receiptImageUrl,
           status: dbStatus as any,
           rawScannedText: rawText || null,
-          verifiedAt: new Date()
+          ...(finalStatus === 'VERIFIED' ? { verifiedAt: new Date() } : {})
         },
         create: {
           branchId,
           cashierId,
           provider,
-          txnReference,
+          txnReference: canonicalRef,
           amount: new Prisma.Decimal(finalAmount),
           expectedAmount: expectedAmount ? new Prisma.Decimal(expectedAmount) : null,
           receivingAccount,
@@ -219,17 +260,11 @@ export const processVerification = async (options: VerificationRequest) => {
       if (finalStatus !== 'VERIFIED' && providerResult.message) {
          (record as any).message = providerResult.message;
       }
-      if (finalStatus === 'NEEDS_SUFFIX') {
-         (record as any).status = 'NEEDS_SUFFIX';
-      }
 
       return record;
     });
 
     if (result.status === 'AMOUNT_MISMATCH') {
-      return { status: 400, result };
-    }
-    if ((result.status as any) === 'NEEDS_SUFFIX') {
       return { status: 400, result };
     }
     if (result.status === 'INVALID_RECEIPT' || result.status === 'FAILED_UPSTREAM') {
