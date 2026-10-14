@@ -49,4 +49,31 @@ router.get('/settings/accounts', requireAuth, getOrganizationAccounts);
 router.post('/settings/accounts', requireAuth, requireManager, registerAccount);
 router.patch('/settings/accounts/:id/toggle', requireAuth, requireManager, toggleAccountStatus);
 
+// Provider Status / Health Probe Endpoint (for dashboard and ops monitoring)
+import { runStatusProviderProbe, getStatusCapabilities } from '../services/statusProbeService';
+
+router.get('/status/providers', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const [cbeResult, cbeNewResult, telebirrResult] = await Promise.allSettled([
+      runStatusProviderProbe('cbe'),
+      runStatusProviderProbe('cbe-new'),
+      runStatusProviderProbe('telebirr'),
+    ]);
+
+    const capabilities = getStatusCapabilities();
+
+    res.json({
+      checkedAt: new Date().toISOString(),
+      capabilities,
+      providers: {
+        cbe: cbeResult.status === 'fulfilled' ? cbeResult.value : { error: (cbeResult as any).reason?.message },
+        'cbe-new': cbeNewResult.status === 'fulfilled' ? cbeNewResult.value : { error: (cbeNewResult as any).reason?.message },
+        telebirr: telebirrResult.status === 'fulfilled' ? telebirrResult.value : { error: (telebirrResult as any).reason?.message },
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to probe provider status', details: error.message });
+  }
+});
+
 export default router;

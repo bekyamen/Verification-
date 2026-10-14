@@ -59,29 +59,37 @@ export const verifyImagePayload = async (req: AuthenticatedRequest, res: Respons
       expectedAmount = parseFloat(req.body.expectedAmount);
     }
 
-    const extractedOld = await parseFileBuffer(req.file.buffer, req.file.mimetype);
-    
-    // Explicitly scan for QR to solve PDF / missing QR bugs
-    const manualQr = await decodeReceiptQr(req.file.buffer, req.file.mimetype);
-    const combinedRawText = [manualQr, extractedOld.rawText].filter(Boolean).join('\n');
-    
-    // Pass the underlying OCR string through the dissector for robust extraction
-    const normalized = combinedRawText 
-      ? dissectPayload(combinedRawText) 
-      : { 
-          provider: extractedOld.provider, 
-          txnReference: extractedOld.txnReference || '',
-          receivingAccount: undefined,
-          senderAccount: undefined,
-          payerPhone: undefined
-        } as any;
+    // 1. Run QR decode and OCR concurrently — QR picks the txnReference,
+    //    OCR gives the full rawText (including FT reference, names, etc.)
+    const [qrResult, ocrResult] = await Promise.allSettled([
+      decodeReceiptQr(req.file.buffer, req.file.mimetype),
+      parseFileBuffer(req.file.buffer, req.file.mimetype),
+    ]);
+
+    const manualQr = qrResult.status === 'fulfilled' ? qrResult.value : null;
+    const extractedOcr = ocrResult.status === 'fulfilled' ? ocrResult.value : { provider: 'UNKNOWN', txnReference: '', amount: undefined, rawText: '' };
+
+    // Combine QR URL + OCR text so downstream verifiers can find FT references
+    const combinedRawText = [manualQr, extractedOcr.rawText].filter(Boolean).join('\n');
+
+    // Dissect from QR first (most reliable), fall back to OCR text
+    let normalized = manualQr
+      ? dissectPayload(manualQr)
+      : combinedRawText
+        ? dissectPayload(combinedRawText)
+        : ({ provider: 'UNKNOWN', txnReference: '' } as any);
+
+    // If QR-based dissect couldn't identify the provider/ref, try OCR text
+    if ((normalized.provider === 'UNKNOWN' || !normalized.txnReference) && combinedRawText) {
+      normalized = dissectPayload(combinedRawText);
+    }
 
     const result = await processVerification({
       branchId,
       cashierId,
-      provider: normalized.provider === 'UNKNOWN' ? extractedOld.provider : normalized.provider,
-      txnReference: normalized.txnReference || extractedOld.txnReference || '',
-      amount: extractedOld.amount || undefined,
+      provider: normalized.provider === 'UNKNOWN' ? (extractedOcr.provider || 'UNKNOWN') : normalized.provider,
+      txnReference: normalized.txnReference || extractedOcr.txnReference || '',
+      amount: extractedOcr.amount || undefined,
       expectedAmount,
       receivingAccount: normalized.receivingAccount,
       senderAccount: normalized.senderAccount,

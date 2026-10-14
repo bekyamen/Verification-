@@ -9,19 +9,29 @@ export const parseRawText = (rawText: string): ExtractedReceiptData => {
   let txnReference: string | null = null;
   let amount: number | null = null;
 
-  // Amount extraction helper 
-  // Looks for numbers with optional commas and decimals usually clustered near 'ETB' or 'BIRR' or 'AMOUNT'
+  // Amount extraction helper
+  // Handles formats like:
+  //   "ETB 6.00", "6.00 ETB", "AMOUNT: 1,500.00"
+  //   "-6 . 0 0 (ETB)"  <- Telebirr app receipt (sender view, OCR-spaced digits)
   const extractAmount = (text: string): number | null => {
-    const amountMatch = text.match(/(?:ETB|BIRR|AMOUNT|PAID)[:\s]*([\d,]+(?:\.\d{1,2})?)/i) || text.match(/([\d,]+(?:\.\d{1,2})?)[\s]*(?:ETB|BIRR)/i);
-    if (amountMatch && amountMatch[1]) {
-      const cleanNumString = amountMatch[1].replace(/,/g, '');
-      const parsedAmount = parseFloat(cleanNumString);
-      if (!isNaN(parsedAmount)) return parsedAmount;
+    // Pre-process: collapse OCR-space-padded decimals like "-6 . 0 0" => "6.00"
+    const collapsed = text.replace(/-?\s*(\d[\d\s,]*)\s*\.\s*([\d\s]+)/g, (_m, intPart, decPart) => {
+      return intPart.replace(/[\s,]/g, '') + '.' + decPart.replace(/\s/g, '');
+    });
+
+    // Keyword-anchored patterns - also match "(ETB)" with optional parens
+    const anchored =
+      collapsed.match(/(?:ETB|BIRR|AMOUNT|PAID)[:\s)]*(-?[\d,]+(?:\.\d{1,2})?)/i) ||
+      collapsed.match(/(-?[\d,]+(?:\.\d{1,2})?)\s*[\[(]?\s*(?:ETB|BIRR)\s*[\])]?/i);
+    if (anchored && anchored[1]) {
+      const n = parseFloat(anchored[1].replace(/,/g, ''));
+      if (!isNaN(n)) return Math.abs(n); // always positive (sender view is negative)
     }
-    // Fallback heuristic for any stray decimal figure that looks like a large total
-    const fallbackMatch = text.match(/\b(\d{1,3}(?:,\d{3})*(?:\.\d{2}))\b/);
-    if(fallbackMatch && fallbackMatch[1]) {
-      return parseFloat(fallbackMatch[1].replace(/,/g, ''));
+
+    // Fallback: any properly-formatted decimal number
+    const fallbackMatch = collapsed.match(/\b(\d{1,3}(?:,\d{3})*(?:\.\d{2}))\b/);
+    if (fallbackMatch && fallbackMatch[1]) {
+      return Math.abs(parseFloat(fallbackMatch[1].replace(/,/g, '')));
     }
     return null;
   };
@@ -51,10 +61,16 @@ export const parseRawText = (rawText: string): ExtractedReceiptData => {
     normalizedText.includes('TRANSFER MONEY')
   ) {
     provider = 'TELEBIRR';
-    // Telebirr transaction IDs are strictly 10 alphanumeric characters (MUST contain both letters and digits)
-    const telebirrMatch = normalizedText.match(/\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*[0-9])[A-Z0-9]{10}\b/);
-    if (telebirrMatch) {
-      txnReference = telebirrMatch[0];
+    // Telebirr transaction IDs are 10-12 alphanumeric characters (MUST contain both letters and digits)
+    // Prefer the one near a label like 'Transaction Numb' or 'Transaction Number'
+    const telebirrLabelMatch = normalizedText.match(/TRANSACTION\s+(?:NUMB(?:ER)?|NO|ID)\s*:?\s*([A-Z0-9]{8,15})/);
+    if (telebirrLabelMatch) {
+      txnReference = telebirrLabelMatch[1];
+    } else {
+      const telebirrMatch = normalizedText.match(/\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*[0-9])[A-Z0-9]{10,12}\b/);
+      if (telebirrMatch) {
+        txnReference = telebirrMatch[0];
+      }
     }
     amount = extractAmount(normalizedText);
   }
@@ -66,6 +82,13 @@ export const parseRawText = (rawText: string): ExtractedReceiptData => {
     amount: amount || null,
     rawText
   };
+};
+
+let persistentWorker: any = null;
+const getTesseractWorker = async () => {
+  if (persistentWorker) return persistentWorker;
+  persistentWorker = await createWorker('eng');
+  return persistentWorker;
 };
 
 export const parseFileBuffer = async (fileBuffer: Buffer, mimetype: string): Promise<ExtractedReceiptData> => {
@@ -81,13 +104,12 @@ export const parseFileBuffer = async (fileBuffer: Buffer, mimetype: string): Pro
     }
   }
 
-  // Fallback to Image OCR
-  let worker = null;
+  // Fallback to Image OCR (reusing persistent worker to skip 10-15s cold boots)
   try {
-
-    worker = await createWorker('eng');
+    const worker = await getTesseractWorker();
     const { data: { text } } = await worker.recognize(fileBuffer);
-    await worker.terminate();
+    
+    // DO NOT invoke worker.terminate() so subsequent image uploads parse instantly
     
     const combinedText = text;
     if (!combinedText || combinedText.trim().length === 0) {
@@ -96,11 +118,6 @@ export const parseFileBuffer = async (fileBuffer: Buffer, mimetype: string): Pro
 
     return parseRawText(combinedText);
   } catch (error) {
-    if (worker) {
-      try {
-        await worker.terminate();
-      } catch(e) {}
-    }
     throw new Error(`Failed to parse image: ${error instanceof Error ? error.message : 'Unknown OCR error'}`);
   }
 };

@@ -85,13 +85,20 @@ export const dissectPayload = (input: string): NormalizedPayload => {
   }
 
   // Amount parsing heuristic (Look for Transferred Amount first to avoid fee)
-  const amountMatch = rawCleanText.match(/(?:Transferred\s*Amount|Amount\s*Transferred)\s*:?\s*ETB\s*([\d,]+(?:\.\d{1,2})?)/i) || 
-                      rawCleanText.match(/(?:Transferred\s*Amount|Amount\s*Transferred)\s*:?\s*([\d,]+(?:\.\d{1,2})?)/i) ||
-                      rawCleanText.match(/(?:ETB|BIRR|AMOUNT|PAID)[:\s]*([\d,]+(?:\.\d{1,2})?)/i) || 
-                      rawCleanText.match(/([\d,]+(?:\.\d{1,2})?)[\s]*(?:ETB|BIRR)/i);
+  // Priority 1: Telebirr screenshot OCR produces '-6 . 0 0 (ETB)' — spaced digits + parenthesized currency
+  // We strip internal spaces from digit sequences and take absolute value (sender paid the amount)
+  const spacedTelebirrAmount = rawCleanText.match(/-?\s*([\d][\d\s]*\.\s*[\d][\d\s]*)\s*\(\s*ETB\s*\)/i);
+  const amountMatch = spacedTelebirrAmount
+      ? [null, spacedTelebirrAmount[1].replace(/\s+/g, '')]
+      : (
+          rawCleanText.match(/(?:Transferred\s*Amount|Amount\s*Transferred)\s*:?\s*ETB\s*([\d,]+(?:\.\d{1,2})?)/i) || 
+          rawCleanText.match(/(?:Transferred\s*Amount|Amount\s*Transferred)\s*:?\s*([\d,]+(?:\.\d{1,2})?)/i) ||
+          rawCleanText.match(/(?:ETB|BIRR|AMOUNT|PAID)[:\s]*([\d,]+(?:\.\d{1,2})?)/i) || 
+          rawCleanText.match(/([\d,]+(?:\.\d{1,2})?)[\s]*(?:ETB|BIRR)/i)
+        );
   if (amountMatch && amountMatch[1]) {
-     const parsedAmount = parseFloat(amountMatch[1].replace(/,/g, ''));
-     if (!isNaN(parsedAmount)) {
+     const parsedAmount = Math.abs(parseFloat(amountMatch[1].replace(/,/g, '')));
+     if (!isNaN(parsedAmount) && parsedAmount > 0) {
          normalized.amount = parsedAmount;
      }
   }
@@ -158,7 +165,20 @@ export const dissectPayload = (input: string): NormalizedPayload => {
 
   if (upperText.includes('TELEBIRR') || upperText.includes('ETHIO TELECOM') || upperText.includes('TRANSACTION TO') || upperText.includes('TRANSFER MONEY') || upperText.includes('TRANSACTION NUMBER')) {
     normalized.provider = 'TELEBIRR';
-    if (!normalized.txnReference) normalized.txnReference = extractGenericRef(upperText);
+    if (!normalized.txnReference) {
+      // Telebirr transaction numbers are 10-11 alphanumeric chars containing both letters & digits
+      // e.g. DJD5QVJV5EN, TT12345678A
+      // Look for them near the 'Transaction Numb' or 'Transaction Number' label first
+      const telebirrLabelMatch = upperText.match(/TRANSACTION\s+(?:NUMB(?:ER)?|NO|ID)\s*:?\s*([A-Z0-9]{8,15})/) ||
+                                  upperText.match(/(?:TXN|REF(?:ERENCE)?)\s*(?:NO|NUMBER|ID)?\s*:?\s*([A-Z0-9]{8,15})/i);
+      if (telebirrLabelMatch) {
+        normalized.txnReference = telebirrLabelMatch[1];
+      } else {
+        // Fallback: a standalone 10-11 char token with both letters and digits (strict Telebirr format)
+        const strictMatch = upperText.match(/\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*[0-9])[A-Z0-9]{10,11}\b/);
+        normalized.txnReference = strictMatch ? strictMatch[0] : extractGenericRef(upperText);
+      }
+    }
     return normalized as NormalizedPayload;
   }
 
@@ -174,7 +194,9 @@ export const dissectPayload = (input: string): NormalizedPayload => {
     return normalized as NormalizedPayload;
   }
 
-  if (upperText.includes('ZEMEN')) {
+  // Use word-boundary to avoid matching 'ZemenGEBEYA' ad banners on Telebirr receipts.
+  // 'ZEMEN BANK' or standalone 'ZEMEN' as a bank keyword — not embedded in other words.
+  if (/\bZEMEN\s+BANK\b/.test(upperText) || (/\bZEMEN\b/.test(upperText) && !upperText.includes('ZEMENGEBEYA') && !upperText.includes('ZEMEN GEBEYA'))) {
     normalized.provider = 'ZEMEN';
     if (!normalized.txnReference) normalized.txnReference = extractGenericRef(upperText);
     return normalized as NormalizedPayload;

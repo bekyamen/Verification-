@@ -22,27 +22,6 @@ export const processVerification = async (options: VerificationRequest) => {
   }
 
   try {
-    // 1. Fast-path check for duplicates to save time and prevent unnecessary scraping
-    const preCheckRecord = await prisma.verificationRecord.findUnique({
-      where: {
-        branchId_provider_txnReference: { branchId, provider, txnReference }
-      }
-    });
-
-    /* 
-    if (preCheckRecord && preCheckRecord.status === 'VERIFIED') {
-      const today = new Date(new Date().setHours(0,0,0,0));
-      await prisma.dailyReport.upsert({
-        where: { branchId_reportDate: { branchId, reportDate: today } },
-        create: {
-          branchId, reportDate: today, totalRevenue: 0, telebirrTotal: 0,
-          cbeTotal: 0, cashTotal: 0, totalTransactions: 0, duplicatesBlocked: 1
-        },
-        update: { duplicatesBlocked: { increment: 1 } }
-      });
-      return { status: 409, result: { status: 'FLAGGED_DUPLICATE', message: 'Transaction was already verified.' } };
-    }
-    */
 
     // 2. Delegate to Provider Strategy OUTSIDE the transaction to prevent database timeouts
     const verifier = verifierRegistry[provider];
@@ -107,45 +86,33 @@ export const processVerification = async (options: VerificationRequest) => {
     // Validate strict safety checks BEFORE creating the record
     if (finalStatus === 'VERIFIED') {
       try {
-        if (provider === 'CBE') {
-           if (finalStatus === 'VERIFIED') {
-              const ftMatch = canonicalRef.match(/^FT(\d{2})(\d{3})/i);
-              let refDate: Date | null = null;
-              if (ftMatch) {
-                 const year = 2000 + parseInt(ftMatch[1], 10);
-                 const dayOfYear = parseInt(ftMatch[2], 10);
-                 refDate = new Date(year, 0); // Jan 1st
-                 refDate.setDate(dayOfYear);
-              }
-              const targetDate = refDate || providerResult.date;
+        // Check printed date mismatch for CBE (fraud guard: printed date must match actual transaction date)
+        if (provider === 'CBE' && options.printedDate) {
+          const ftMatch = canonicalRef.match(/^FT(\d{2})(\d{3})/i);
+          let refDate: Date | null = null;
+          if (ftMatch) {
+            const year = 2000 + parseInt(ftMatch[1], 10);
+            const dayOfYear = parseInt(ftMatch[2], 10);
+            refDate = new Date(year, 0);
+            refDate.setDate(dayOfYear);
+          }
+          const targetDate = refDate || providerResult.date;
 
-              if (targetDate) {
-                  const todayMidnight = new Date();
-                  todayMidnight.setHours(0,0,0,0);
-                  const targetMidnight = new Date(targetDate);
-                  targetMidnight.setHours(0,0,0,0);
-                  const daysDiff = Math.abs(todayMidnight.getTime() - targetMidnight.getTime()) / (1000 * 3600 * 24);
-                  
-                  const maxAge = Number(process.env.RECEIPT_MAX_AGE_DAYS ?? 2);
-                  if (daysDiff > maxAge) {
-                     finalStatus = 'INVALID_RECEIPT';
-                     providerResult.message = `Receipt is older than ${maxAge} days.`;
-                  }
-   
-                  if (options.printedDate) {
-                     const printedMidnight = new Date(options.printedDate);
-                     printedMidnight.setHours(0,0,0,0);
-                     const printedDaysDiff = Math.abs(printedMidnight.getTime() - targetMidnight.getTime()) / (1000 * 3600 * 24);
-                     if (printedDaysDiff > 1) {
-                        finalStatus = 'INVALID_RECEIPT';
-                        providerResult.message = 'The date printed on the receipt does not match the actual transaction date.';
-                     }
-                  }
-              }
-           }
+          if (targetDate) {
+            const targetMidnight = new Date(targetDate);
+            targetMidnight.setHours(0, 0, 0, 0);
+            const printedMidnight = new Date(options.printedDate);
+            printedMidnight.setHours(0, 0, 0, 0);
+            const printedDaysDiff =
+              Math.abs(printedMidnight.getTime() - targetMidnight.getTime()) / (1000 * 3600 * 24);
+            if (printedDaysDiff > 1) {
+              finalStatus = 'INVALID_RECEIPT';
+              providerResult.message = 'The date printed on the receipt does not match the actual transaction date.';
+            }
+          }
         }
       } catch (e) {
-         console.warn("Safety Check Error:", e);
+        console.warn('Safety Check Error:', e);
       }
     }
 
@@ -154,86 +121,64 @@ export const processVerification = async (options: VerificationRequest) => {
     }
 
     let dbStatus = finalStatus;
+    const isSuccessful = finalStatus === 'VERIFIED';
+
+    // For failed/upstream-error records, do NOT store the uploaded image URL or
+    // input amount as valid data — they're meaningless for a failed attempt.
+    const storedReceiptImageUrl = isSuccessful ? receiptImageUrl : null;
+    const storedReceiptUrl = isSuccessful ? receiptUrl : null;
+    const storedAmount = isSuccessful ? finalAmount : 0;
+    const now = new Date();
 
     // Utilize Prisma Interactive Transaction to guarantee database-level concurrency protection
     const result = await prisma.$transaction(async (tx) => {
-      // 3. Double Check for duplicates safely locked inside transaction (handles race conditions)
-      // NEW: @@unique([branchId, provider, txnReference])
-      const existingRecord = await tx.verificationRecord.findUnique({
-        where: {
-          branchId_provider_txnReference: {
-            branchId,
-            provider,
-            txnReference: canonicalRef
-          }
-        }
+
+      // Check whether this transaction was already successfully VERIFIED before the upsert.
+      // This lets us skip double-counting it in the daily revenue ledger on re-verifications.
+      const priorRecord = await tx.verificationRecord.findUnique({
+        where: { branchId_provider_txnReference: { branchId, provider, txnReference: canonicalRef } },
+        select: { status: true }
       });
+      const wasAlreadyVerified = priorRecord?.status === 'VERIFIED';
 
-      if (existingRecord) {
-        /* 
-        if (existingRecord.status === 'VERIFIED') {
-          // It's a duplicate of a valid payment! Log the fraud attempt.
-          const today = new Date(new Date().setHours(0,0,0,0));
-          await tx.dailyReport.upsert({
-            where: {
-              branchId_reportDate: { branchId, reportDate: today }
-            },
-            create: {
-              branchId,
-              reportDate: today,
-              totalRevenue: 0,
-              telebirrTotal: 0,
-              cbeTotal: 0,
-              cashTotal: 0,
-              totalTransactions: 0,
-              duplicatesBlocked: 1
-            },
-            update: {
-              duplicatesBlocked: { increment: 1 }
-            }
-          });
-
-          throw new Error('FLAGGED_DUPLICATE');
-        }
-        */
-      }
-
-      // 4. Persist the verfication record with new schema fields
+      // Persist / update the verification record
       const record = await tx.verificationRecord.upsert({
         where: { branchId_provider_txnReference: { branchId, provider, txnReference: canonicalRef } },
         update: {
-          amount: new Prisma.Decimal(finalAmount),
+          amount: new Prisma.Decimal(storedAmount),
           expectedAmount: expectedAmount ? new Prisma.Decimal(expectedAmount) : null,
           receivingAccount,
           senderAccount,
           payerPhone,
           payerName: providerResult.payerName || null,
-          receiptUrl,
-          receiptImageUrl,
+          receiptUrl: storedReceiptUrl,
+          receiptImageUrl: storedReceiptImageUrl,
           status: dbStatus as any,
           rawScannedText: rawText || null,
-          ...(finalStatus === 'VERIFIED' ? { verifiedAt: new Date() } : {})
+          ...(isSuccessful ? { verifiedAt: now } : {})
         },
         create: {
           branchId,
           cashierId,
           provider,
           txnReference: canonicalRef,
-          amount: new Prisma.Decimal(finalAmount),
+          amount: new Prisma.Decimal(storedAmount),
           expectedAmount: expectedAmount ? new Prisma.Decimal(expectedAmount) : null,
           receivingAccount,
           senderAccount,
           payerPhone,
           payerName: providerResult.payerName || null,
-          receiptUrl,
-          receiptImageUrl,
+          receiptUrl: storedReceiptUrl,
+          receiptImageUrl: storedReceiptImageUrl,
           status: dbStatus as any,
           rawScannedText: rawText || null,
+          ...(isSuccessful ? { verifiedAt: now } : {})
         }
       });
 
-      // 4. Update ledger if verified
-      if (finalStatus === 'VERIFIED') {
+      // Update daily ledger only for genuinely new VERIFIED transactions.
+      // Skip on re-verifications to prevent double-counting revenue.
+      if (finalStatus === 'VERIFIED' && !wasAlreadyVerified) {
         const today = new Date(new Date().setHours(0,0,0,0));
         await tx.dailyReport.upsert({
           where: { branchId_reportDate: { branchId, reportDate: today } },
@@ -243,7 +188,7 @@ export const processVerification = async (options: VerificationRequest) => {
             totalRevenue: finalAmount,
             telebirrTotal: provider === 'TELEBIRR' ? finalAmount : 0,
             cbeTotal: provider === 'CBE' || provider === 'CBE_BIRR' ? finalAmount : 0,
-            cashTotal: provider === 'AWASH' ? finalAmount : 0,
+            cashTotal: (provider === 'AWASH' || provider === 'DASHEN' || provider === 'BOA') ? finalAmount : 0,
             totalTransactions: 1,
             duplicatesBlocked: 0
           },
@@ -252,6 +197,7 @@ export const processVerification = async (options: VerificationRequest) => {
             totalTransactions: { increment: 1 },
             telebirrTotal: provider === 'TELEBIRR' ? { increment: finalAmount } : undefined,
             cbeTotal: provider === 'CBE' || provider === 'CBE_BIRR' ? { increment: finalAmount } : undefined,
+            cashTotal: (provider === 'AWASH' || provider === 'DASHEN' || provider === 'BOA') ? { increment: finalAmount } : undefined,
           }
         });
       }
@@ -275,10 +221,16 @@ export const processVerification = async (options: VerificationRequest) => {
 
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      return { status: 409, result: { status: 'FLAGGED_DUPLICATE', message: 'Transaction was already verified (Caught by P2002 Race Condition)' } };
-    }
-    if (error instanceof Error && error.message === 'FLAGGED_DUPLICATE') {
-      return { status: 409, result: { status: 'FLAGGED_DUPLICATE', message: 'Transaction was already verified.' } };
+      // Race condition: another concurrent request created the record first.
+      // Re-query and return the persisted record so the client still gets a valid result.
+      try {
+        const existing = await prisma.verificationRecord.findUnique({
+          where: { branchId_provider_txnReference: { branchId, provider, txnReference } }
+        });
+        if (existing) {
+          return { status: 200, result: existing };
+        }
+      } catch (_) { /* fall through to 500 */ }
     }
     console.error("Verification Error:", error);
     return { status: 500, result: { status: 'INVALID_RECEIPT', message: 'Internal Server Error' } };

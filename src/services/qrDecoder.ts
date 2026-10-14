@@ -13,7 +13,9 @@ const ALLOWED_HOSTS = [
     'mbreciept.cbe.com.et',
     'mbreceipt.cbe.com.et',
     'apps.cbe.com.et',
-    'telebirr'
+    'telebirr',
+    'ethiotelecom.et',
+    'et.telebirr'
 ];
 
 function isWhitelisted(url: string): boolean {
@@ -58,8 +60,17 @@ export const decodeReceiptQr = async (buffer: Buffer, mimetype: string): Promise
             const code = jsQR(clampedArray, info.width, info.height, {
                 inversionAttempts: "attemptBoth"
             });
-            if (code && code.data && isWhitelisted(code.data)) {
-                return code.data;
+            if (code && code.data) {
+                // Return whitelisted receipt URLs directly. For other QR values (text, unknown URLs)
+                // also return them so the downstream parser can attempt to classify them.
+                // This allows Telebirr QR codes with new/unknown domains to still be processed.
+                if (isWhitelisted(code.data) || code.data.startsWith('https://') || code.data.startsWith('http://')) {
+                    return code.data;
+                }
+                // Also return alphanumeric-only codes (could be a bare transaction reference)
+                if (/^[A-Z0-9]{8,20}$/i.test(code.data.trim())) {
+                    return code.data.trim();
+                }
             }
             return null;
         };

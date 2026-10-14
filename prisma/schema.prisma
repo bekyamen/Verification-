@@ -8,28 +8,97 @@ datasource db {
 }
 
 model Organization {
-  id        String   @id @default(uuid())
-  name      String
-  phone     String   @unique
-  city      String   @default("Addis Ababa")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
+  id                     String                  @id @default(uuid())
+  name                   String
+  phone                  String                  @unique
+  city                   String                  @default("Addis Ababa")
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  bankSettlementAccounts BankSettlementAccount[]
   branches               Branch[]
   users                  User[]
-  bankSettlementAccounts BankSettlementAccount[]
 }
 
 model Branch {
-  id             String   @id @default(uuid())
+  id             String               @id @default(uuid())
   organizationId String
   name           String
-  createdAt      DateTime @default(now())
+  createdAt      DateTime             @default(now())
+  organization   Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  dailyReports   DailyReport[]
+  users          User[]
+  verifications  VerificationRecord[]
+}
 
-  organization  Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  users         User[]
-  verifications VerificationRecord[]
-  dailyReports  DailyReport[]
+model User {
+  id              String                  @id @default(uuid())
+  organizationId  String
+  branchId        String?
+  fullName        String
+  phone           String                  @unique
+  passwordHash    String
+  pinCode         String?
+  role            Role                    @default(CASHIER)
+  createdAt       DateTime                @default(now())
+  createdAccounts BankSettlementAccount[] @relation("CreatedAccounts")
+  updatedAccounts BankSettlementAccount[] @relation("UpdatedAccounts")
+  branch          Branch?                 @relation(fields: [branchId], references: [id])
+  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model BankSettlementAccount {
+  id                String       @id @default(uuid())
+  organizationId    String
+  bankName          BankName
+  accountNumber     String
+  accountHolderName String
+  createdAt         DateTime     @default(now())
+  createdById       String?
+  isActive          Boolean      @default(true)
+  updatedAt         DateTime     @updatedAt
+  updatedById       String?
+  createdBy         User?        @relation("CreatedAccounts", fields: [createdById], references: [id])
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  updatedBy         User?        @relation("UpdatedAccounts", fields: [updatedById], references: [id])
+}
+
+model VerificationRecord {
+  id               String             @id @default(uuid())
+  branchId         String
+  cashierId        String
+  provider         Provider
+  txnReference     String
+  amount           Decimal            @db.Decimal(12, 2)
+  expectedAmount   Decimal?           @db.Decimal(12, 2)
+  payerName        String?
+  status           VerificationStatus
+  rawScannedText   String?
+  verifiedAt       DateTime?
+  payerPhone       String?
+  receiptImageUrl  String?
+  receiptUrl       String?
+  receivingAccount String?
+  senderAccount    String?
+  branch           Branch             @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, provider, txnReference])
+  @@index([branchId, verifiedAt, status])
+}
+
+model DailyReport {
+  id                String   @id @default(uuid())
+  branchId          String
+  reportDate        DateTime @db.Date
+  totalRevenue      Decimal  @db.Decimal(12, 2)
+  telebirrTotal     Decimal  @db.Decimal(12, 2)
+  cbeTotal          Decimal  @db.Decimal(12, 2)
+  cashTotal         Decimal  @db.Decimal(12, 2)
+  totalTransactions Int
+  duplicatesBlocked Int
+  generatedAt       DateTime @default(now())
+  branch            Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, reportDate])
 }
 
 enum Role {
@@ -38,45 +107,11 @@ enum Role {
   CASHIER
 }
 
-model User {
-  id             String   @id @default(uuid())
-  organizationId String
-  branchId       String?
-  fullName       String
-  phone          String   @unique
-  passwordHash   String
-  pinCode        String? // Hashed or encrypted 4-digit string for cashiers
-  role           Role     @default(CASHIER)
-  createdAt      DateTime @default(now())
-
-  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  branch          Branch?                 @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  createdAccounts BankSettlementAccount[] @relation("CreatedAccounts")
-  updatedAccounts BankSettlementAccount[] @relation("UpdatedAccounts")
-}
-
 enum BankName {
   TELEBIRR
   CBE
   BOA
   AWASH
-}
-
-model BankSettlementAccount {
-  id                String   @id @default(uuid())
-  organizationId    String
-  bankName          BankName
-  accountNumber     String
-  accountHolderName String
-  isActive          Boolean  @default(true)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  createdById       String?
-  updatedById       String?
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  createdBy    User?        @relation("CreatedAccounts", fields: [createdById], references: [id], onDelete: SetNull)
-  updatedBy    User?        @relation("UpdatedAccounts", fields: [updatedById], references: [id], onDelete: SetNull)
 }
 
 enum Provider {
@@ -100,45 +135,4 @@ enum VerificationStatus {
   INVALID
   INVALID_RECEIPT
   FAILED_UPSTREAM
-}
-
-model VerificationRecord {
-  id               String             @id @default(uuid())
-  branchId         String
-  cashierId        String
-  provider         Provider
-  txnReference     String
-  amount           Decimal            @db.Decimal(12, 2)
-  expectedAmount   Decimal?           @db.Decimal(12, 2)
-  receivingAccount String?
-  senderAccount    String?
-  payerPhone       String?
-  payerName        String?
-  receiptUrl       String?            @db.Text
-  receiptImageUrl  String?            @db.Text
-  status           VerificationStatus
-  rawScannedText   String?            @db.Text
-  verifiedAt       DateTime           @default(now())
-
-  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
-
-  @@unique([branchId, provider, txnReference])
-  @@index([branchId, verifiedAt, status])
-}
-
-model DailyReport {
-  id                String   @id @default(uuid())
-  branchId          String
-  reportDate        DateTime @db.Date
-  totalRevenue      Decimal  @db.Decimal(12, 2)
-  telebirrTotal     Decimal  @db.Decimal(12, 2)
-  cbeTotal          Decimal  @db.Decimal(12, 2)
-  cashTotal         Decimal  @db.Decimal(12, 2)
-  totalTransactions Int
-  duplicatesBlocked Int
-  generatedAt       DateTime @default(now())
-
-  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
-
-  @@unique([branchId, reportDate])
 }

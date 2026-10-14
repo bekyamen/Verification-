@@ -50,7 +50,7 @@ export const generateDailyExcelReport = async (branchId: string, startDate: Date
     }
 
     sheet.addRow({
-      time: rc.verifiedAt.toLocaleString(),
+      time: rc.verifiedAt ? rc.verifiedAt.toLocaleString() : '-',
       cashier: rc.cashierId,
       provider: rc.provider,
       txnRef: rc.txnReference,

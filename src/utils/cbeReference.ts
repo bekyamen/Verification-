@@ -1,13 +1,17 @@
-const NEW_CBE_URL_REGEX = /^https?:\/\/mbreciept\.cbe\.com\.et\/([A-Za-z0-9-]+)\/?$/i;
-const NEW_CBE_TOKEN_REGEX = /^[A-Za-z0-9-]{15,40}$/;
+// Matches https://mbreciept.cbe.com.et/v2-<token> — captures the full "v2-xxx" path segment
+const NEW_CBE_URL_REGEX = /^https?:\/\/mbreciept\.cbe\.com\.et\/(v2-[A-Za-z0-9]+)\/?$/i;
+// Matches bare token: "v2-xxxx" format OR legacy plain alphanumeric 15-40 chars
+const NEW_CBE_TOKEN_REGEX = /^v2-[A-Za-z0-9]{10,36}$|^[A-Za-z0-9-]{15,40}$/;
 const LEGACY_CBE_REFERENCE_REGEX = /^FT[A-Z0-9]{10}$/i;
 const LEGACY_CBE_COMBINED_ID_REGEX = /^(FT[A-Z0-9]{10})(\d{8})$/i;
 
 export function extractNewCbeToken(input: string): string | null {
   const trimmed = input.trim();
+  // Full URL supplied — extract the path segment (e.g. "v2-hfHCxHm0dwBHOQSgWNOf")
   const urlMatch = trimmed.match(NEW_CBE_URL_REGEX);
   if (urlMatch) return urlMatch[1] ?? null;
-  if (!trimmed.toUpperCase().startsWith("FT") && NEW_CBE_TOKEN_REGEX.test(trimmed)) {
+  // Bare token supplied directly (v2-xxx or plain alphanumeric, not an FT reference)
+  if (!trimmed.toUpperCase().startsWith('FT') && NEW_CBE_TOKEN_REGEX.test(trimmed)) {
     return trimmed;
   }
   return null;
