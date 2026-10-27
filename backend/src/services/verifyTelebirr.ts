@@ -5,25 +5,60 @@
  *
  * Fetches the official Telebirr receipt page at:
  *   https://transactioninfo.ethiotelecom.et/receipt/{RECEIPT_NO}
- *   https://transactioninfo.ethiotelecom.et/receipt/view?transactionno={RECEIPT_NO}
  *
- * The page is server-rendered HTML containing bilingual (English + Amharic)
- * key-value rows. We parse with Cheerio.
+ * Network routing
+ * ───────────────
+ * Set TELEBIRR_PROXY_URL (any HTTP/HTTPS proxy URL, e.g. http://user:pass@host:3128)
+ * to route all Telebirr requests through that proxy. This is needed when the backend
+ * runs on a non-Ethio-Telecom network (e.g. Safaricom) because Ethio Telecom's receipt
+ * portal only accepts connections from their own IP range.
+ *
+ * When TELEBIRR_PROXY_URL is not set the connection is direct (works on Ethio Telecom).
  */
 
 import axios, { AxiosError } from 'axios';
 import * as cheerio from 'cheerio';
 import https from 'https';
+// CommonJS-compatible import for https-proxy-agent (package uses modern 'exports' field
+// which the project's commonjs moduleResolution cannot resolve via import statement).
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { HttpsProxyAgent } = require('https-proxy-agent');
+
 import logger from '../utils/logger';
+import { telebirrCache } from '../utils/verifyCache';
 
 const TELEBIRR_RECEIPT_BASE = 'https://transactioninfo.ethiotelecom.et/receipt';
-const TELEBIRR_RECEIPT_VIEW = 'https://transactioninfo.ethiotelecom.et/receipt/view';
 
-// Some Telebirr domains have self-signed / untrusted leaf certificates
-const agent = new https.Agent({ rejectUnauthorized: false });
+// ── Agent / proxy setup ────────────────────────────────────────────────────────
+// If TELEBIRR_PROXY_URL is set we route through that proxy (needed on non-Ethio-Telecom
+// networks such as Safaricom). Otherwise we connect directly.
+const PROXY_URL = process.env.TELEBIRR_PROXY_URL?.trim() || null;
 
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1_500;
+function buildAgent(): https.Agent {
+  if (PROXY_URL) {
+    // Mask credentials in the log
+    const maskedProxy = PROXY_URL.replace(/:([^@/]+)@/, ':***@');
+    logger.info(`[Telebirr] Using proxy: ${maskedProxy}`);
+    // HttpsProxyAgent tunnels HTTPS through an HTTP CONNECT proxy.
+    // rejectUnauthorized:false handles Ethio Telecom's self-signed leaf certs.
+    return new HttpsProxyAgent(PROXY_URL, { rejectUnauthorized: false });
+  }
+  // Direct connection — works when the server is on Ethio Telecom network.
+  return new https.Agent({ rejectUnauthorized: false, keepAlive: true });
+}
+
+const agent = buildAgent();
+
+if (PROXY_URL) {
+  const maskedProxy = PROXY_URL.replace(/:([^@/]+)@/, ':***@');
+  logger.info(`[Telebirr] Proxy active: all Telebirr requests will route through ${maskedProxy}`);
+} else {
+  logger.info('[Telebirr] No proxy configured — using direct connection (must be on Ethio Telecom network).');
+}
+
+const MAX_RETRIES = 1;
+const BASE_DELAY_MS = 300;
+
 
 export interface TelebirrReceipt {
   payerName: string;
@@ -47,7 +82,20 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function isRetryable(err: AxiosError): boolean {
   if (err.response) return false;
-  return ['ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND'].includes(err.code ?? '');
+  // Retry on transient network errors only — not on connection refused (server down)
+  return ['ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND', 'ECONNREFUSED'].includes(err.code ?? '');
+}
+
+/** True when the error is a TCP-level connection failure (firewall / unreachable host). */
+function isConnectionBlocked(err: AxiosError): boolean {
+  const code = err.code ?? '';
+  const msg  = (err.message ?? '').toLowerCase();
+  return (
+    ['ETIMEDOUT', 'ECONNABORTED', 'ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET'].includes(code) ||
+    msg.includes('timeout') ||
+    msg.includes('network') ||
+    msg.includes('connect')
+  );
 }
 
 /**
@@ -136,7 +184,7 @@ function parseTelebirrHtml(html: string, inputRef: string): TelebirrReceipt {
     'Credited Party Account No', 'Receiver Account', 'Receiver Phone',
     'Beneficiary Number', 'To', 'Recipient Number'
   );
-  const transactionStatus = pick('Transaction Status', 'Status', 'Payment Status') || 'Completed';
+  const transactionStatus = pick('Transaction Status', 'Status', 'Payment Status') || '';
   const receiptNo = pickOrRegex(
     ['Receipt No', 'Receipt Number', 'Transaction ID', 'Transaction No', 'Reference'],
     /(?:Receipt\s*No|Transaction\s*(?:ID|No))\s*[:\s]+([A-Z0-9]{6,20})/i
@@ -262,7 +310,7 @@ async function fetchReceiptHtml(url: string): Promise<string> {
       const { data } = await axios.get<string>(url, {
         httpsAgent: agent,
         headers: BROWSER_HEADERS,
-        timeout: 30_000,
+        timeout: 9_000,
         responseType: 'text',
         maxRedirects: 5,
       });
@@ -274,6 +322,30 @@ async function fetchReceiptHtml(url: string): Promise<string> {
       if (axiosErr.response?.status === 404) {
         const e = new Error('Telebirr receipt not found.');
         (e as any).statusCode = 404;
+        throw e;
+      }
+
+      // TCP-level block (firewall, unreachable host, ISP block) — give a clear message
+      if (isConnectionBlocked(axiosErr)) {
+        const code = axiosErr.code ?? 'UNKNOWN';
+        logger.error(
+          `[Telebirr] TCP connection failed [${code}] to ${url} — ` +
+          `server unreachable (ISP block or network firewall). attempt=${attempt}/${MAX_RETRIES}`
+        );
+
+        if (isRetryable(axiosErr) && attempt < MAX_RETRIES) {
+          const delay = BASE_DELAY_MS * 2 ** (attempt - 1);
+          logger.warn(`[Telebirr] Retrying in ${delay}ms…`);
+          await sleep(delay);
+          continue;
+        }
+
+        const e = new Error(
+          `Telebirr server is unreachable from this network (${code}). ` +
+          `This is typically a firewall or ISP block — the request never reached Ethio Telecom servers.`
+        );
+        (e as any).statusCode = 503;
+        (e as any).isNetworkBlocked = true;
         throw e;
       }
 
@@ -304,7 +376,7 @@ async function fetchReceiptHtml(url: string): Promise<string> {
  *   - Full URL: https://transactioninfo.ethiotelecom.et/receipt/DJD5QVJV5EN
  *   - Raw transaction ID: DJD5QVJV5EN
  */
-export async function verifyTelebirr(reference: string): Promise<TelebirrReceipt | null> {
+export async function _verifyTelebirr(reference: string): Promise<TelebirrReceipt | null> {
   const ref = reference.trim();
 
   // ── Determine URL ───────────────────────────────────────────────────────────
@@ -322,23 +394,11 @@ export async function verifyTelebirr(reference: string): Promise<TelebirrReceipt
   try {
     html = await fetchReceiptHtml(receiptUrl);
   } catch (err: any) {
-    // If the path-based URL 404s and we started with a raw ID, try the view URL
-    if ((err as any).statusCode === 404 && !reference.startsWith('http')) {
-      logger.info(`[Telebirr] Path URL not found, trying view URL for: ${ref}`);
-      try {
-        html = await fetchReceiptHtml(`${TELEBIRR_RECEIPT_VIEW}?transactionno=${encodeURIComponent(ref)}`);
-      } catch (err2: any) {
-        const wrappedErr = new Error(err2.message || 'Transaction not found.');
-        wrappedErr.name = 'TelebirrVerificationError';
-        (wrappedErr as any).statusCode = err2.statusCode ?? 404;
-        throw wrappedErr;
-      }
-    } else {
-      const wrappedErr = new Error(err.message || 'Failed to fetch Telebirr receipt.');
-      wrappedErr.name = 'TelebirrVerificationError';
-      (wrappedErr as any).statusCode = err.statusCode ?? 502;
-      throw wrappedErr;
-    }
+    // Propagate all errors directly — the path-based URL is the only one we try.
+    const wrappedErr = new Error(err.message || 'Failed to fetch Telebirr receipt.');
+    wrappedErr.name = 'TelebirrVerificationError';
+    (wrappedErr as any).statusCode = err.statusCode ?? 502;
+    throw wrappedErr;
   }
 
   // ── Guard: check HTML actually contains receipt data ────────────────────────
@@ -376,6 +436,15 @@ export async function verifyTelebirr(reference: string): Promise<TelebirrReceipt
 
   logger.info(`[Telebirr] ✅ Parsed receipt for ${ref}: amount=${receipt.settledAmount}, receiver=${receipt.creditedPartyAccountNo}`);
   return receipt;
+}
+
+/**
+ * Cached wrapper around fetchAndParse.
+ * Successful results are stored for 10 minutes; failures always go upstream.
+ */
+export async function verifyTelebirr(reference: string): Promise<TelebirrReceipt | null> {
+  const ref = reference.trim();
+  return telebirrCache.getOrFetch(ref, () => _verifyTelebirr(ref).then(r => r ?? null));
 }
 
 /**

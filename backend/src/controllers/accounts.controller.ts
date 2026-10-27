@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { AuthenticatedRequest } from '../types';
 import prisma from '../utils/prisma';
 import { registerAccountSchema } from '../validators/accounts.validator';
+import { accountsCache } from '../utils/verifyCache';
 
 export const getOrganizationAccounts = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
@@ -65,6 +66,11 @@ export const registerAccount = async (req: AuthenticatedRequest, res: Response):
       }
     });
 
+    // Invalidate accounts cache for every branch in this org so verifications
+    // immediately see the new account without waiting for the 60 s TTL.
+    const branches = await prisma.branch.findMany({ where: { organizationId }, select: { id: true } });
+    for (const b of branches) accountsCache.delete(`branch:${b.id}`);
+
     res.status(201).json({ account });
   } catch (error: any) {
     res.status(400).json({ error: 'Validation failed', details: error.errors || error.message });
@@ -104,6 +110,10 @@ export const toggleAccountStatus = async (req: AuthenticatedRequest, res: Respon
             updatedById: userId
         }
     });
+
+    // Invalidate so the next verification sees the updated active/inactive state
+    const branches = await prisma.branch.findMany({ where: { organizationId }, select: { id: true } });
+    for (const b of branches) accountsCache.delete(`branch:${b.id}`);
 
     res.status(200).json({ account: updated });
   } catch (error: any) {

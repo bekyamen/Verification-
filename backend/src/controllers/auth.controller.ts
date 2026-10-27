@@ -181,3 +181,74 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     res.status(400).json({ error: 'Validation failed', details: error.errors || error.message });
   }
 };
+
+/**
+ * POST /auth/cashier-token
+ *
+ * Called once at shift start from a counter tablet.  Accepts the raw PIN and
+ * branchId, verifies with bcrypt (the only time bcrypt runs), and returns a
+ * short-lived JWT.  All subsequent /verify/* requests use that JWT via the
+ * standard requireAuth middleware — no more bcrypt on every scan.
+ *
+ * Body: { pin: string, branchId: string }
+ * Response: { token: string, cashier: { id, fullName, role } }
+ */
+export const cashierLogin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { pin, branchId } = req.body as { pin?: string; branchId?: string };
+
+    if (!pin || !branchId) {
+      res.status(400).json({ error: 'pin and branchId are required.' });
+      return;
+    }
+
+    // Load all cashier-role users for this branch in one query
+    const users = await prisma.user.findMany({
+      where: {
+        branchId,
+        role: { in: ['CASHIER', 'MANAGER', 'OWNER'] },
+        pinCode: { not: null },
+      },
+    });
+
+    if (users.length === 0) {
+      res.status(401).json({ error: 'Invalid PIN or branch.' });
+      return;
+    }
+
+    // bcrypt compare — runs once here, never again per-request
+    let matched: typeof users[number] | null = null;
+    for (const u of users) {
+      if (u.pinCode && (await bcrypt.compare(pin, u.pinCode))) {
+        matched = u;
+        break;
+      }
+    }
+
+    if (!matched) {
+      res.status(401).json({ error: 'Invalid PIN.' });
+      return;
+    }
+
+    const payload: JwtPayload = {
+      userId: matched.id,
+      role: matched.role,
+      organizationId: matched.organizationId,
+      branchId: matched.branchId,
+    };
+
+    // 8-hour token — covers a full shift
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+
+    res.status(200).json({
+      token,
+      cashier: {
+        id: matched.id,
+        fullName: matched.fullName,
+        role: matched.role,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Authentication error', details: error.message });
+  }
+};

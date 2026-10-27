@@ -14,11 +14,13 @@ router.get('/health', (req, res) => {
 
 
 // Verification Endpoints (Used by counter tablets)
-// Using requireCashierPIN to quickly authenticate shared tablet connections
-router.post('/verify/text', requireCashierPIN, verifyTextPayload);
-router.post('/verify/image', requireCashierPIN, upload.single('receipt'), verifyImagePayload);
-router.post('/verify/url', requireCashierPIN, verifyUrlPayload);
-router.post('/verify/manual', requireCashierPIN, verifyManualPayload);
+// Tablets call POST /auth/cashier-token once at shift start to get an 8-hour JWT,
+// then send it as "Authorization: Bearer <token>" on every verify request.
+// requireAuth verifies the JWT in < 1 ms — no bcrypt on every scan.
+router.post('/verify/text',   requireAuth, verifyTextPayload);
+router.post('/verify/image',  requireAuth, upload.single('receipt'), verifyImagePayload);
+router.post('/verify/url',    requireAuth, verifyUrlPayload);
+router.post('/verify/manual', requireAuth, verifyManualPayload);
 
 // Manager/Owner Reporting Endpoints (Require full JWT auth)
 router.get('/reports/daily', requireAuth, async (req: AuthenticatedRequest, res: Response) => {

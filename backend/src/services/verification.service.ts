@@ -1,6 +1,7 @@
 import prisma from '../utils/prisma';
 import { Prisma } from '@prisma/client';
 import { VerificationRequest, verifierRegistry } from './verificationEngine';
+import { accountsCache } from '../utils/verifyCache';
 
 export const processVerification = async (options: VerificationRequest) => {
   const { 
@@ -23,29 +24,54 @@ export const processVerification = async (options: VerificationRequest) => {
 
   try {
 
-    // 2. Delegate to Provider Strategy OUTSIDE the transaction to prevent database timeouts
+    // Unsupported provider — return a clean 422 instead of throwing
     const verifier = verifierRegistry[provider];
     if (!verifier) {
-        throw new Error('No verifier found for provider');
+      return {
+        status: 422,
+        result: {
+          status: 'INVALID_RECEIPT',
+          message: `Provider ${provider} is not supported for verification.`,
+          provider,
+          txnReference,
+        }
+      };
     }
 
-    const branch = await prisma.branch.findUnique({
-       where: { id: branchId },
-       include: { organization: { include: { bankSettlementAccounts: { where: { isActive: true } } } } }
-    });
-    
+    // ── Registered accounts (cached 60 s per branch) ──────────────────────────
+    const cacheKey = `branch:${branchId}`;
     let registeredAccounts: any[] = [];
-    if (branch && branch.organization) {
-        registeredAccounts = branch.organization.bankSettlementAccounts.filter((a) => {
-            if (provider === 'CBE' && a.bankName === 'CBE') return true;
-            if (provider === 'TELEBIRR' && a.bankName === 'TELEBIRR') return true;
-            if (provider === 'BOA' && a.bankName === 'BOA') return true;
-            if (provider === 'AWASH' && a.bankName === 'AWASH') return true;
-            return false;
-        });
+
+    const cachedAccounts = accountsCache.get(cacheKey);
+    if (cachedAccounts !== null) {
+      // Filter to the relevant provider from the cached full list
+      registeredAccounts = cachedAccounts.filter((a: any) => {
+        if (provider === 'CBE'      && a.bankName === 'CBE')      return true;
+        if (provider === 'TELEBIRR' && a.bankName === 'TELEBIRR') return true;
+        if (provider === 'BOA'      && a.bankName === 'BOA')      return true;
+        if (provider === 'AWASH'    && a.bankName === 'AWASH')    return true;
+        return false;
+      });
+    } else {
+      const branch = await prisma.branch.findUnique({
+        where: { id: branchId },
+        include: { organization: { include: { bankSettlementAccounts: { where: { isActive: true } } } } }
+      });
+
+      const allAccounts = branch?.organization?.bankSettlementAccounts ?? [];
+      // Store the full (un-filtered) list so any provider can use it within the TTL
+      accountsCache.set(cacheKey, allAccounts);
+
+      registeredAccounts = allAccounts.filter((a) => {
+        if (provider === 'CBE'      && a.bankName === 'CBE')      return true;
+        if (provider === 'TELEBIRR' && a.bankName === 'TELEBIRR') return true;
+        if (provider === 'BOA'      && a.bankName === 'BOA')      return true;
+        if (provider === 'AWASH'    && a.bankName === 'AWASH')    return true;
+        return false;
+      });
     }
 
-    if (['CBE', 'TELEBIRR', 'BOA', 'AWASH'].includes(provider) && registeredAccounts.length === 0) {
+    if (['CBE', 'TELEBIRR'].includes(provider) && registeredAccounts.length === 0) {
         return {
             status: 422,
             result: {
@@ -57,7 +83,17 @@ export const processVerification = async (options: VerificationRequest) => {
         };
     }
 
-    const providerResult = await verifier.verify({ ...options, registeredAccounts });
+
+    const expectedReceiverAccount = registeredAccounts[0]?.accountNumber;
+
+    const providerResult = await verifier.verify({
+      ...options,
+      // Always use the DB-registered account — never the client-supplied value
+      receivingAccount: expectedReceiverAccount,
+      senderAccount: undefined,
+      expectedReceiverAccount,
+      registeredAccounts,
+    });
     
     if (providerResult.status === 'NEEDS_INPUT') {
       return { 
@@ -116,8 +152,42 @@ export const processVerification = async (options: VerificationRequest) => {
       }
     }
 
+    // ── Receipt age check ──────────────────────────────────────────────────────
+    if (finalStatus === 'VERIFIED' && providerResult.date) {
+      const RECEIPT_MAX_AGE_DAYS = parseInt(process.env.RECEIPT_MAX_AGE_DAYS ?? '14', 10);
+      const ageDays = (Date.now() - providerResult.date.getTime()) / (1000 * 60 * 60 * 24);
+      if (ageDays > RECEIPT_MAX_AGE_DAYS) {
+        return {
+          status: 422,
+          result: {
+            status: 'INVALID_RECEIPT',
+            message: `Receipt is ${Math.floor(ageDays)} days old (maximum allowed: ${RECEIPT_MAX_AGE_DAYS} days).`,
+            provider,
+            txnReference: canonicalRef,
+          }
+        };
+      }
+    }
+
     if (finalStatus === 'NEEDS_SUFFIX') {
        return { status: 400, result: { status: 'NEEDS_SUFFIX', message: providerResult.message || 'Legacy CBE FT reference requires the last 8 digits of the receiver account. Please enter manually.' } };
+    }
+
+    // ── FAILED_UPSTREAM: never persist — return immediately ───────────────────
+    // Saving a FAILED_UPSTREAM row (amount=0, status=FAILED_UPSTREAM) can silently
+    // overwrite a previously VERIFIED record via upsert, making real payments invisible.
+    // Transient upstream failures (network error, PDF parse failure, etc.) are not
+    // meaningful database state — the cashier can simply retry.
+    if (finalStatus === 'FAILED_UPSTREAM') {
+      return {
+        status: 502,
+        result: {
+          status: 'FAILED_UPSTREAM',
+          message: providerResult.message || 'Upstream bank API error. Please retry.',
+          provider,
+          txnReference,
+        },
+      };
     }
 
     let dbStatus = finalStatus;
@@ -133,11 +203,9 @@ export const processVerification = async (options: VerificationRequest) => {
     // Utilize Prisma Interactive Transaction to guarantee database-level concurrency protection
     const result = await prisma.$transaction(async (tx) => {
 
-      // Check whether this transaction was already successfully VERIFIED before the upsert.
-      // This lets us skip double-counting it in the daily revenue ledger on re-verifications.
       const priorRecord = await tx.verificationRecord.findUnique({
         where: { branchId_provider_txnReference: { branchId, provider, txnReference: canonicalRef } },
-        select: { status: true }
+        select: { status: true, id: true }
       });
       const wasAlreadyVerified = priorRecord?.status === 'VERIFIED';
 
@@ -147,14 +215,14 @@ export const processVerification = async (options: VerificationRequest) => {
         update: {
           amount: new Prisma.Decimal(storedAmount),
           expectedAmount: expectedAmount ? new Prisma.Decimal(expectedAmount) : null,
-          receivingAccount,
-          senderAccount,
+          receivingAccount: expectedReceiverAccount || null,
           payerPhone,
           payerName: providerResult.payerName || null,
           receiptUrl: storedReceiptUrl,
           receiptImageUrl: storedReceiptImageUrl,
           status: dbStatus as any,
           rawScannedText: rawText || null,
+          // Only stamp verifiedAt when this update itself is a VERIFIED outcome
           ...(isSuccessful ? { verifiedAt: now } : {})
         },
         create: {
@@ -164,8 +232,7 @@ export const processVerification = async (options: VerificationRequest) => {
           txnReference: canonicalRef,
           amount: new Prisma.Decimal(storedAmount),
           expectedAmount: expectedAmount ? new Prisma.Decimal(expectedAmount) : null,
-          receivingAccount,
-          senderAccount,
+          receivingAccount: expectedReceiverAccount || null,
           payerPhone,
           payerName: providerResult.payerName || null,
           receiptUrl: storedReceiptUrl,
@@ -223,9 +290,12 @@ export const processVerification = async (options: VerificationRequest) => {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       // Race condition: another concurrent request created the record first.
       // Re-query and return the persisted record so the client still gets a valid result.
+      // NOTE: use canonicalRef (the normalised value used in the upsert) if available,
+      //       otherwise fall back to the raw txnReference.
+      const lookupRef = (error as any)._canonicalRef ?? txnReference;
       try {
         const existing = await prisma.verificationRecord.findUnique({
-          where: { branchId_provider_txnReference: { branchId, provider, txnReference } }
+          where: { branchId_provider_txnReference: { branchId, provider, txnReference: lookupRef } }
         });
         if (existing) {
           return { status: 200, result: existing };

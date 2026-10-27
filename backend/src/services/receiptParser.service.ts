@@ -84,12 +84,59 @@ export const parseRawText = (rawText: string): ExtractedReceiptData => {
   };
 };
 
-let persistentWorker: any = null;
-const getTesseractWorker = async () => {
-  if (persistentWorker) return persistentWorker;
-  persistentWorker = await createWorker('eng');
-  return persistentWorker;
-};
+let workerPool: any[] = [];
+let workerIndex = 0;
+let poolInitPromise: Promise<void> | null = null;
+
+const POOL_SIZE = 2;
+
+/**
+ * Pre-warm the Tesseract worker pool on first call.
+ * Uses a single promise so concurrent early callers don't create extra workers.
+ */
+async function ensureWorkerPool(): Promise<void> {
+  if (workerPool.length === POOL_SIZE) return;
+  if (!poolInitPromise) {
+    poolInitPromise = (async () => {
+      for (let i = workerPool.length; i < POOL_SIZE; i++) {
+        const w = await createWorker('eng');
+        workerPool.push(w);
+      }
+    })();
+  }
+  return poolInitPromise;
+}
+
+/** Round-robin worker selection. Both workers are always kept alive. */
+async function getWorker(): Promise<any> {
+  await ensureWorkerPool();
+  const w = workerPool[workerIndex % POOL_SIZE];
+  workerIndex++;
+  return w;
+}
+
+/**
+ * Pre-process an image buffer with sharp before handing it to Tesseract:
+ *  - Resize to ≤ 1000 px wide (preserves aspect ratio)
+ *  - Convert to grayscale
+ * This typically halves OCR time compared to a full-size colour image.
+ * Falls back to the original buffer if sharp fails.
+ */
+async function preprocessImage(buf: Buffer): Promise<Buffer> {
+  try {
+    // sharp's CJS interop: the callable is at module.default or the module itself
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const sharpMod = require('sharp');
+    const sharpFn: (input: Buffer) => any = sharpMod.default ?? sharpMod;
+    return await sharpFn(buf)
+      .resize({ width: 1000, withoutEnlargement: true })
+      .grayscale()
+      .png()
+      .toBuffer() as Buffer;
+  } catch {
+    return buf; // sharp failed — use original
+  }
+}
 
 export const parseFileBuffer = async (fileBuffer: Buffer, mimetype: string): Promise<ExtractedReceiptData> => {
   if (mimetype === 'application/pdf') {
@@ -104,12 +151,12 @@ export const parseFileBuffer = async (fileBuffer: Buffer, mimetype: string): Pro
     }
   }
 
-  // Fallback to Image OCR (reusing persistent worker to skip 10-15s cold boots)
+  // Fallback to Image OCR
   try {
-    const worker = await getTesseractWorker();
-    const { data: { text } } = await worker.recognize(fileBuffer);
-    
-    // DO NOT invoke worker.terminate() so subsequent image uploads parse instantly
+    // Pre-process: resize + grayscale to speed up Tesseract
+    const processedBuf = await preprocessImage(fileBuffer);
+    const worker = await getWorker();
+    const { data: { text } } = await worker.recognize(processedBuf);
     
     const combinedText = text;
     if (!combinedText || combinedText.trim().length === 0) {

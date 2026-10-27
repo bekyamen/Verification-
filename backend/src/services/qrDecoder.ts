@@ -1,4 +1,5 @@
 import jsQR from 'jsqr';
+import { parseReceiptLink } from './receiptLink';
 import { exec } from 'child_process';
 import util from 'util';
 import fs from 'fs';
@@ -9,18 +10,9 @@ import sharp from 'sharp';
 
 const execAsync = util.promisify(exec);
 
-const ALLOWED_HOSTS = [
-    'mbreciept.cbe.com.et',
-    'mbreceipt.cbe.com.et',
-    'apps.cbe.com.et',
-    'telebirr',
-    'ethiotelecom.et',
-    'et.telebirr'
-];
-
-function isWhitelisted(url: string): boolean {
-    const lowerUrl = url.toLowerCase();
-    return ALLOWED_HOSTS.some(host => lowerUrl.includes(host));
+/** Returns true only for genuine CBE / Telebirr receipt URLs. */
+function isAllowedReceiptUrl(url: string): boolean {
+    return parseReceiptLink(url) !== null;
 }
 
 async function renderPdfToPng(buffer: Buffer): Promise<Buffer | null> {
@@ -61,15 +53,15 @@ export const decodeReceiptQr = async (buffer: Buffer, mimetype: string): Promise
                 inversionAttempts: "attemptBoth"
             });
             if (code && code.data) {
-                // Return whitelisted receipt URLs directly. For other QR values (text, unknown URLs)
-                // also return them so the downstream parser can attempt to classify them.
-                // This allows Telebirr QR codes with new/unknown domains to still be processed.
-                if (isWhitelisted(code.data) || code.data.startsWith('https://') || code.data.startsWith('http://')) {
-                    return code.data;
+                const qrData = code.data.trim();
+                // Only return URLs that are genuine CBE or Telebirr receipt links.
+                // Any other URL (including SSRF bait like 169.254.x.x) is silently dropped.
+                if (qrData.startsWith('https://') || qrData.startsWith('http://')) {
+                    return isAllowedReceiptUrl(qrData) ? qrData : null;
                 }
-                // Also return alphanumeric-only codes (could be a bare transaction reference)
-                if (/^[A-Z0-9]{8,20}$/i.test(code.data.trim())) {
-                    return code.data.trim();
+                // Bare alphanumeric transaction references (no URL) pass through as-is
+                if (/^[A-Z0-9]{8,20}$/i.test(qrData)) {
+                    return qrData;
                 }
             }
             return null;

@@ -18,6 +18,7 @@ import * as cheerio from 'cheerio';
 import https from 'https';
 import { PDFParse } from 'pdf-parse';
 import logger from '../utils/logger';
+import { cbeCache } from '../utils/verifyCache';
 
 // ── CBE Public JSON API ──────────────────────────────────────────────────────
 // Official public endpoint: https://mbreciept.cbe.com.et/v2-{token}
@@ -38,11 +39,13 @@ const LEGACY_APPS_URL_RE = /^https?:\/\/apps\.cbe\.com\.et/i;
 const LEGACY_COMBINED_RE = /^(FT[A-Z0-9]{8,14})(\d{8})$/i; // FT...{8-digit suffix}
 
 const ACCOUNT_LENGTH = 13;
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1_000;
+const MAX_RETRIES = 2;
+const BASE_DELAY_MS = 300;
+const ATTEMPT_TIMEOUT_MS = 9_000;
 
-// Accept self-signed cert from apps.cbe.com.et:100
-const legacyAgent = new https.Agent({ rejectUnauthorized: false });
+// Keep-alive agents — reuses TCP connections across requests (saves ~300 ms handshake)
+const tokenAgent  = new https.Agent({ keepAlive: true });
+const legacyAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true });
 
 export interface VerifyResult {
   success: boolean;
@@ -97,7 +100,159 @@ function isRetryable(err: AxiosError): boolean {
   return ['ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND'].includes(err.code ?? '');
 }
 
-// ── 1. NEW CBE receipt token → JSON API ──────────────────────────────────────
+// ── 1a. Helper: parse JSON object as a CBE receipt ─────────────────────────────
+
+function tryExtractFromJsonObject(obj: any, token: string): VerifyResult | null {
+  if (!obj || typeof obj !== 'object') return null;
+  const d: any = obj?.data ?? obj;
+  if (!d || typeof d !== 'object') return null;
+
+  const statusField = (d.status ?? d.transactionStatus ?? '').toString().toUpperCase();
+  if (statusField && !['', 'SUCCESS', 'COMPLETED', 'SUCCESSFUL'].includes(statusField)) return null;
+
+  const amount = toNumber(
+    d.debitAmount ?? d.amount ?? d.transferredAmount ?? d.settledAmount ??
+    d.creditAmount ?? d.totalAmount ?? d.transactionAmount ?? d.paidAmount ??
+    d.principal ?? d.value ?? d.netAmount ?? d.credit ?? d.debit ??
+    d.txnAmount ?? d.transAmount ?? d.transferAmount ?? d.originalAmount ??
+    d.txn_amount ?? d.trans_amount ?? d.transfer_amount ??
+    (d.transaction as any)?.amount ?? (d.transaction as any)?.debitAmount ??
+    (d.data as any)?.amount ?? (d.data as any)?.debitAmount
+  );
+  if (amount === undefined) return null;
+
+  return {
+    success: true,
+    payer:           d.debitAccountHolder  ?? d.debitAccountName  ?? d.payerName   ?? d.senderName  ?? undefined,
+    payerAccount:    d.debitAccountNo      ?? d.payerAccount      ?? undefined,
+    receiver:        d.creditAccountHolder ?? d.creditAccountName ?? d.receiverName ?? undefined,
+    receiverAccount: d.creditAccountNo     ?? d.receiverAccount   ?? undefined,
+    amount,
+    date:      parseCBEDate(d.processingDate ?? d.transactionDate ?? d.date ?? d.dateTime),
+    reference: d.id ?? d.transactionId ?? d.reference ?? token,
+    reason:    Array.isArray(d.paymentDetails)
+      ? d.paymentDetails.join(' ')
+      : (d.description ?? d.narrative ?? d.reason ?? null),
+  };
+}
+
+// ── 1b. Helper: extract receipt data from a CBE SPA HTML page ────────────────
+// The receipt viewer is a Next.js SPA. When our server fetches the token URL it
+// gets the HTML shell. We recover the data by:
+//   1. Reading the __NEXT_DATA__ JSON island Next.js embeds in every SSR page.
+//   2. Scanning any <script type="application/json"> blocks.
+//   3. Probing the most likely REST sub-paths that the SPA's JS would call.
+
+async function extractFromHtmlSpa(html: string, token: string): Promise<VerifyResult> {
+  const $ = cheerio.load(html);
+
+  // Strategy 1: __NEXT_DATA__ island (present on SSR/ISR Next.js pages)
+  const nextDataText = $('#__NEXT_DATA__').text().trim();
+  if (nextDataText) {
+    try {
+      const nextData = JSON.parse(nextDataText);
+      // Walk common locations: pageProps, pageProps.receipt, pageProps.transaction, etc.
+      const candidates = [
+        nextData?.props?.pageProps,
+        nextData?.props?.pageProps?.receipt,
+        nextData?.props?.pageProps?.transaction,
+        nextData?.props?.pageProps?.data,
+      ];
+      for (const c of candidates) {
+        const r = tryExtractFromJsonObject(c, token);
+        if (r) {
+          logger.info('[CBE/spa] Extracted receipt from __NEXT_DATA__');
+          return r;
+        }
+      }
+    } catch {
+      /* malformed JSON — ignore */ }
+  }
+
+  // Strategy 2: any <script type="application/json"> or similar data islands
+  let jsonIslandResult: VerifyResult | null = null;
+  $('script[type="application/json"], script[type="application/ld+json"]').each((_i, el) => {
+    if (jsonIslandResult) return; // already found one
+    try {
+      const parsed = JSON.parse($(el).text().trim());
+      const r = tryExtractFromJsonObject(parsed, token);
+      if (r) {
+        logger.info('[CBE/spa] Extracted receipt from embedded <script> JSON island');
+        jsonIslandResult = r;
+      }
+    } catch { /* ignore */ }
+  });
+  if (jsonIslandResult) return jsonIslandResult;
+
+  // Strategy 3: probe probable REST API sub-paths the SPA's JS calls
+  const apiPaths = [
+    `/api/${token}`,
+    `/api/receipt/${token}`,
+    `/api/receipts/${token}`,
+    `/api/transaction/${token}`,
+    `/api/v1/receipt/${token}`,
+    `/api/v2/receipt/${token}`,
+    `/receipt/api/${token}`,
+  ];
+
+  const commonHeaders = {
+    'X-App-ID': CBE_APP_ID,
+    'X-App-Version': CBE_APP_VERSION,
+    'Accept': 'application/json',
+    'Origin': 'https://mbreciept.cbe.com.et',
+    'Referer': `https://mbreciept.cbe.com.et/${token}`,
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  };
+
+  for (const path of apiPaths) {
+    const apiUrl = `${CBE_JSON_API_BASE}${path}`;
+    try {
+      logger.info(`[CBE/spa] Probing API sub-path: ${apiUrl}`);
+      const apiRes = await axios.get(apiUrl, {
+        headers: commonHeaders,
+        timeout: 5_000,
+        responseType: 'arraybuffer',
+        // Don't throw on 4xx/5xx so we can inspect the body
+        validateStatus: () => true,
+      });
+      const apiBuf = Buffer.from(apiRes.data);
+      const apiCT  = ((apiRes.headers['content-type'] as string) ?? '').toLowerCase();
+
+      if (apiCT.includes('application/pdf') || apiBuf.slice(0, 8).toString('ascii').startsWith('%PDF')) {
+        logger.info(`[CBE/spa] Sub-path ${path} returned a PDF — parsing`);
+        const pdfParser = new PDFParse({ data: apiBuf });
+        try {
+          const res = await pdfParser.getText();
+          return parseCbePdfText(res.text);
+        } finally {
+          await pdfParser.destroy().catch(() => undefined);
+        }
+      }
+
+      if (apiCT.includes('application/json') || (apiRes.status >= 200 && apiRes.status < 300)) {
+        try {
+          const json = JSON.parse(apiBuf.toString('utf8'));
+          const r = tryExtractFromJsonObject(json, token);
+          if (r) {
+            logger.info(`[CBE/spa] Extracted receipt from API sub-path: ${path}`);
+            return r;
+          }
+        } catch { /* not JSON */ }
+      }
+    } catch (e: any) {
+      logger.debug(`[CBE/spa] Sub-path ${path} failed: ${e.message}`);
+    }
+  }
+
+  // Log a snippet of the HTML so future debugging is easier
+  logger.warn(`[CBE/spa] Could not extract receipt from SPA. HTML title: "${$('title').text()}". All API sub-paths exhausted.`);
+  if (process.env.LOG_CHECK_RAW === '1') {
+    logger.debug(`[CBE/spa] HTML preview (1000 chars): ${html.slice(0, 1000)}`);
+  }
+  return { success: false, error: 'CBE receipt page is a client-side SPA and no API sub-path returned receipt data.', statusCode: 502 };
+}
+
+// ── 1c. NEW CBE receipt token → JSON / PDF / SPA ─────────────────────────────
 
 async function verifyByToken(token: string): Promise<VerifyResult> {
   // URL format: https://mbreciept.cbe.com.et/v2-{token}
@@ -108,21 +263,70 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
     try {
       logger.info(`[CBE/token] Fetching (attempt ${attempt}/${MAX_RETRIES}): ${url}`);
 
-      const { data } = await axios.get(url, {
+      // Download as binary so we can detect PDF before parsing
+      const response = await axios.get(url, {
+        httpsAgent: tokenAgent,
         headers: {
           'X-App-ID': CBE_APP_ID,
           'X-App-Version': CBE_APP_VERSION,
-          'Accept': 'application/json, text/plain, */*',
+          'Accept': 'application/json, application/pdf, */*',
           'Origin': 'https://mbreciept.cbe.com.et',
           'Referer': 'https://mbreciept.cbe.com.et/',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
-        timeout: 20_000,
+        timeout: ATTEMPT_TIMEOUT_MS,
+        responseType: 'arraybuffer',
       });
 
-      if (process.env.LOG_CHECK_RAW === '1') {
-        logger.debug(`[CBE/token] Raw response: ${JSON.stringify(data)}`);
+      const buf = Buffer.from(response.data);
+      const contentType = ((response.headers['content-type'] as string) ?? '').toLowerCase();
+
+      // ── PDF path ────────────────────────────────────────────────────────────
+      // The v2 endpoint sometimes returns a PDF instead of JSON.
+      // Detect by content-type OR the %PDF magic bytes in the first 8 bytes.
+      const isPdf =
+        contentType.includes('application/pdf') ||
+        buf.slice(0, 8).toString('ascii').startsWith('%PDF');
+
+      if (isPdf) {
+        logger.info('[CBE/token] Response is a PDF — extracting text with pdf-parse');
+        if (process.env.LOG_CHECK_RAW === '1') {
+          logger.debug(`[CBE/token] PDF size: ${buf.length} bytes`);
+        }
+        const pdfParser = new PDFParse({ data: buf });
+        let pdfText: string;
+        try {
+          const result = await pdfParser.getText();
+          pdfText = result.text;
+        } finally {
+          await pdfParser.destroy().catch(() => undefined);
+        }
+        if (process.env.LOG_CHECK_RAW === '1') {
+          logger.debug(`[CBE/token] PDF text (first 3000 chars):\n${pdfText.slice(0, 3000)}`);
+        }
+        return parseCbePdfText(pdfText);
       }
+
+      // ── HTML SPA path ────────────────────────────────────────────────────────
+      const isHtml = contentType.includes('text/html') || buf.slice(0, 15).toString('utf8').trimStart().startsWith('<');
+      if (isHtml) {
+        logger.info('[CBE/token] Response is an HTML SPA page — probing for API sub-paths');
+        return extractFromHtmlSpa(buf.toString('utf8'), token);
+      }
+
+      // ── JSON path ───────────────────────────────────────────────────────────
+      let data: any;
+      try {
+        data = JSON.parse(buf.toString('utf8'));
+      } catch {
+        // Not JSON, not PDF, not HTML — log and fail gracefully
+        const preview = buf.toString('utf8').slice(0, 200);
+        logger.warn(`[CBE/token] Response is neither JSON, PDF, nor HTML. Preview: ${preview}`);
+        return { success: false, error: 'CBE API returned an unrecognised response format.', statusCode: 502 };
+      }
+
+      // Always log the raw response for debugging amount field issues
+      logger.debug(`[CBE/token] Raw JSON response: ${JSON.stringify(data)}`);
 
       // Normalise the response (some versions wrap inside `data` key)
       const d: any = data?.data ?? data;
@@ -142,20 +346,26 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
         };
       }
 
-      // Real API field is "debitAmount"; fall back to all known variants
+      // Log every key we see so we can identify new field names in production
+      logger.info(`[CBE/token] Response keys: ${Object.keys(d).join(', ')}`);
+
+      // Real API field is "debitAmount"; fall back to all known variants.
       const amount = toNumber(
         d.debitAmount ?? d.amount ?? d.transferredAmount ?? d.settledAmount ??
         d.creditAmount ?? d.totalAmount ?? d.transactionAmount ?? d.paidAmount ??
-        d.principal ?? d.value ?? d.netAmount ?? d.credit ?? d.debit
+        d.principal ?? d.value ?? d.netAmount ?? d.credit ?? d.debit ??
+        d.txnAmount ?? d.transAmount ?? d.transferAmount ?? d.originalAmount ??
+        d.txn_amount ?? d.trans_amount ?? d.transfer_amount ??
+        // Also check one level nested (e.g. { transaction: { amount: 30 } })
+        (d.transaction as any)?.amount ?? (d.transaction as any)?.debitAmount ??
+        (d.data as any)?.amount ?? (d.data as any)?.debitAmount
       );
       if (amount === undefined) {
-        // Log all keys in the response to help diagnose unknown field names
-        logger.warn(`[CBE/token] Response had no usable amount field. Available keys: ${Object.keys(d).join(', ')}`);
+        logger.warn(`[CBE/token] Response had no usable amount field. Keys: ${Object.keys(d).join(', ')} | Full: ${JSON.stringify(d).slice(0, 500)}`);
         return { success: false, error: 'CBE API response missing amount.', statusCode: 502 };
       }
 
       // Real API: date is in processingDate ("YYYYMMDD"), names use "Holder" suffix
-      // paymentDetails is an array of strings (e.g. ["MB Transfer"])
       return {
         success: true,
         payer:          d.debitAccountHolder  ?? d.debitAccountName  ?? d.payerName    ?? d.senderName   ?? undefined,
@@ -171,7 +381,50 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
       };
     } catch (err: any) {
       const axiosErr = err as AxiosError;
-      
+
+      // ── 502 with PDF body ─────────────────────────────────────────────────────
+      // CBE's gateway sometimes returns HTTP 502 but the response body is the real
+      // PDF receipt. Axios treats 502 as an error, so we must fish the body out of
+      // the error object and run the same PDF path we would on a 200.
+      if (axiosErr.response?.status === 502 && axiosErr.response?.data) {
+        try {
+          const errBuf = Buffer.from(axiosErr.response.data as ArrayBuffer);
+          const errCT  = ((axiosErr.response.headers?.['content-type'] as string) ?? '').toLowerCase();
+          const errIsPdf =
+            errCT.includes('application/pdf') ||
+            errBuf.slice(0, 8).toString('ascii').startsWith('%PDF');
+
+          if (errIsPdf) {
+            logger.info('[CBE/token] 502 response contains a PDF body — extracting with pdf-parse');
+            const pdfParser = new PDFParse({ data: errBuf });
+            let pdfText: string;
+            try {
+              const result = await pdfParser.getText();
+              pdfText = result.text;
+            } finally {
+              await pdfParser.destroy().catch(() => undefined);
+            }
+            if (process.env.LOG_CHECK_RAW === '1') {
+              logger.debug(`[CBE/token] PDF (from 502) text (first 3000 chars):\n${pdfText.slice(0, 3000)}`);
+            }
+            return parseCbePdfText(pdfText);
+          }
+
+          // 502 with HTML (SPA shell) — probe API sub-paths
+          const errIsHtml = errCT.includes('text/html') || errBuf.slice(0, 15).toString('utf8').trimStart().startsWith('<');
+          if (errIsHtml) {
+            logger.info('[CBE/token] 502 body is HTML — probing SPA API sub-paths');
+            return extractFromHtmlSpa(errBuf.toString('utf8'), token);
+          }
+
+          // 502 with an unknown body — log for diagnostics
+          const bodyPreview = errBuf.toString('utf8').slice(0, 300);
+          logger.warn(`[CBE/token] 502 body (unknown content): ${bodyPreview}`);
+        } catch (innerErr: any) {
+          logger.warn(`[CBE/token] Failed to inspect 502 body: ${innerErr.message}`);
+        }
+      }
+
       if (axiosErr.response?.status === 404) {
         return { success: false, error: 'CBE receipt not found.', statusCode: 404 };
       }
@@ -186,8 +439,8 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
         continue;
       }
 
-      const msg = (axiosErr.response?.data as any)?.message ?? axiosErr.message;
-      logger.warn(`[CBE/token] Failed: ${msg}`);
+      const msg = axiosErr.message;
+      logger.warn(`[CBE/token] Failed (${axiosErr.response?.status ?? 'no-status'}): ${msg}`);
       return { success: false, error: msg, statusCode: axiosErr.response?.status ?? 502 };
     }
   }
@@ -360,7 +613,7 @@ async function verifyByLegacyUrl(combinedId: string): Promise<VerifyResult> {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/pdf,*/*',
         },
-        timeout: 25_000,
+        timeout: ATTEMPT_TIMEOUT_MS,
         responseType: 'arraybuffer',
       });
 
@@ -431,12 +684,15 @@ export async function verifyCBE(reference: string, accountNumber?: string): Prom
   // ── New receipt URL ─────────────────────────────────────────────────────────
   const newUrlMatch = ref.match(MBRECIEPT_URL_RE);
   if (newUrlMatch) {
-    return verifyByToken(newUrlMatch[1]);
+    const token = newUrlMatch[1];
+    return cbeCache.getOrFetch(token, () => verifyByToken(token).then(r => r.success ? r : null)
+    ).then(r => r ?? verifyByToken(token));
   }
 
   // ── New receipt token (not an FT reference) ─────────────────────────────────
   if (TOKEN_RE.test(ref) && !FT_RE.test(ref)) {
-    return verifyByToken(ref);
+    return cbeCache.getOrFetch(ref, () => verifyByToken(ref).then(r => r.success ? r : null)
+    ).then(r => r ?? verifyByToken(ref));
   }
 
   // ── Legacy apps.cbe.com.et URL ──────────────────────────────────────────────
@@ -447,7 +703,8 @@ export async function verifyCBE(reference: string, accountNumber?: string): Prom
       if (!combinedId) {
         return { success: false, error: 'Legacy CBE URL is missing the id parameter.', statusCode: 400 };
       }
-      return verifyByLegacyUrl(combinedId);
+      return cbeCache.getOrFetch(combinedId, () => verifyByLegacyUrl(combinedId).then(r => r.success ? r : null)
+      ).then(r => r ?? verifyByLegacyUrl(combinedId));
     } catch {
       return { success: false, error: 'Could not parse legacy CBE URL.', statusCode: 400 };
     }
@@ -465,9 +722,10 @@ export async function verifyCBE(reference: string, accountNumber?: string): Prom
     }
     // Build the combined ID the legacy portal expects: FT...{last-8-digits-of-account}
     const suffix = acct.slice(-8);
-    return verifyByLegacyUrl(`${ref.toUpperCase()}${suffix}`);
+    const combinedId = `${ref.toUpperCase()}${suffix}`;
+    return cbeCache.getOrFetch(combinedId, () => verifyByLegacyUrl(combinedId).then(r => r.success ? r : null)
+    ).then(r => r ?? verifyByLegacyUrl(combinedId));
   }
 
- 
   return { success: false, error: 'Unrecognised CBE reference format.', statusCode: 400 };
 }

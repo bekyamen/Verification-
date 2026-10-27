@@ -1,4 +1,5 @@
 import { Provider } from '@prisma/client';
+import { parseReceiptLink } from './receiptLink';
 
 export interface NormalizedPayload {
   provider: Provider;
@@ -27,43 +28,37 @@ export const dissectPayload = (input: string): NormalizedPayload => {
 
   try {
     if (text.startsWith('http://') || text.startsWith('https://')) {
-      const parsedUrl = new URL(text);
-      const urlText = parsedUrl.href.toLowerCase();
-      
-      if (!embeddedTokenMatch && (urlText.includes('apps.cbe.com.et') || urlText.includes('mbreceipt.cbe.com.et') || urlText.includes('mbreciept.cbe.com.et'))) {
+      // Only accept URLs that are genuine CBE or Telebirr receipt links (SSRF guard).
+      const parsed = parseReceiptLink(text);
+      if (!parsed) {
+        // Unrecognised URL — do not follow or scrape
+        normalized.provider = 'UNKNOWN';
+        normalized.txnReference = '';
+        return normalized as NormalizedPayload;
+      }
+
+      if (parsed.provider === 'CBE') {
         normalized.provider = 'CBE';
-        normalized.txnReference = parsedUrl.searchParams.get('ref') || parsedUrl.searchParams.get('txnId') || '';
-        normalized.receivingAccount = parsedUrl.searchParams.get('account') || parsedUrl.searchParams.get('to') || undefined;
-      }
-      else if (urlText.includes('telebirr') || urlText.includes('ethiotelecom.et')) {
+        // The ref from receiptLink is the token/path or query value;
+        // also check for an FT reference in the original URL params.
+        const urlObj = new URL(text);
+        normalized.txnReference =
+          urlObj.searchParams.get('ref') ||
+          urlObj.searchParams.get('txnId') ||
+          parsed.ref;
+        normalized.receivingAccount =
+          urlObj.searchParams.get('account') ||
+          urlObj.searchParams.get('to') ||
+          undefined;
+      } else {
+        // TELEBIRR
         normalized.provider = 'TELEBIRR';
-        normalized.txnReference = parsedUrl.searchParams.get('txId') || parsedUrl.searchParams.get('id') || text;
+        normalized.txnReference = parsed.ref;
       }
-      else if (urlText.includes('dashen')) {
-        normalized.provider = 'DASHEN';
-        normalized.txnReference = parsedUrl.searchParams.get('ref') || '';
-      }
-      else if (urlText.includes('awashpay.com')) {
-        normalized.provider = 'AWASH';
-        normalized.txnReference = parsedUrl.searchParams.get('ref') || '';
-      }
-      else if (urlText.includes('boa') || urlText.includes('abyssinia')) {
-        normalized.provider = 'BOA';
-        normalized.txnReference = parsedUrl.searchParams.get('ref') || parsedUrl.searchParams.get('txn') || '';
-        normalized.senderAccount = parsedUrl.searchParams.get('sender') || undefined;
-      }
-      else if (urlText.includes('zemen')) {
-        normalized.provider = 'ZEMEN';
-        normalized.txnReference = parsedUrl.searchParams.get('ref') || '';
-      }
-      else if (urlText.includes('mpesa') || urlText.includes('safaricom')) {
-        normalized.provider = 'MPESA';
-        normalized.txnReference = parsedUrl.searchParams.get('ref') || '';
-      }
-      
-      if (normalized.provider !== 'UNKNOWN' && normalized.txnReference) {
+
+      if (normalized.txnReference) {
         if (!text.includes('\n')) {
-            return normalized as NormalizedPayload;
+          return normalized as NormalizedPayload;
         }
       }
     }
