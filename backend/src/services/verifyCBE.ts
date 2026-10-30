@@ -42,9 +42,9 @@ const ACCOUNT_LENGTH = 13;
 const MAX_RETRIES = 2;
 const BASE_DELAY_MS = 150;
 /** Timeout for the v2 token endpoint — kept short so ISP blocks fail fast. */
-const TOKEN_TIMEOUT_MS = 4_000;
+const TOKEN_TIMEOUT_MS = 3_000;
 /** Timeout for the legacy apps.cbe.com.et portal — kept short; hedging covers slowness. */
-const LEGACY_TIMEOUT_MS = 5_000;
+const LEGACY_TIMEOUT_MS = 4_500;
 
 // Keep-alive agents — reuses TCP connections across requests (saves ~300 ms handshake)
 const tokenAgent  = new https.Agent({ keepAlive: true });
@@ -129,6 +129,7 @@ const parseCBEDate = (v: unknown): Date | undefined => {
   }
   return toDate(v);
 };
+
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -702,10 +703,10 @@ type LegacyBody =
   | { notFound: true }
   | { notFound: false; buf: Buffer; contentType: string };
 
-// Hard cap per request. Raise it if the timing lines show CBE normally needs longer.
-const LEGACY_TOTAL_TIMEOUT_MS = Number(process.env.CBE_LEGACY_TIMEOUT_MS ?? 10_000);
-const LEGACY_HEDGE_MS = Number(process.env.CBE_HEDGE_MS ?? 4_000);
-const LEGACY_HEDGE_MAX = Number(process.env.CBE_HEDGE_MAX ?? 1); // 1 = no hedging
+// Hard cap per request. Target ≤5 s total. Raise via env-vars if CBE is consistently slower.
+const LEGACY_TOTAL_TIMEOUT_MS = Number(process.env.CBE_LEGACY_TIMEOUT_MS ?? 4_500);
+const LEGACY_HEDGE_MS         = Number(process.env.CBE_HEDGE_MS          ?? 2_000);
+const LEGACY_HEDGE_MAX        = Number(process.env.CBE_HEDGE_MAX          ?? 2);   // 2 = hedge after 2 s
 
 async function legacyFetchOnce(url: string, t0: number): Promise<LegacyBody> {
   const s = Date.now();

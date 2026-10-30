@@ -90,23 +90,41 @@ export const verifyImagePayload = async (req: AuthenticatedRequest, res: Respons
     const parallelOcrPromise = qrIsCbeToken ? ocrPromise : null;
 
     if (!qrIsReceiptUrl) {
-      // ── Await OCR — usually already finished or close to finishing ────────────
+      // ── Race OCR against a short deadline so CBE lookup can start ASAP ──────
+      // If OCR finishes within the deadline window (it started at t=0 in parallel
+      // with QR decode), we get the FT reference without any extra wait.
+      // If OCR is still running, we proceed with an empty rawText and let the
+      // fallback block below await the remaining OCR duration.
+      const OCR_RACE_DEADLINE_MS = 1_800;
+      const ocrDeadline = new Promise<null>((r) => setTimeout(() => r(null), OCR_RACE_DEADLINE_MS));
       const ocrStart = Date.now();
-      try {
-        extractedOcr = (await ocrPromise) ?? extractedOcr;   // time spent WAITING after QR
-      } catch {
-        // OCR failure is non-fatal — carry on with whatever QR found
+      const raceResult = await Promise.race([ocrPromise, ocrDeadline]);
+      ocrMs = Date.now() - ocrStart;
+
+      if (raceResult !== null) {
+        // OCR finished within the deadline
+        extractedOcr = raceResult ?? extractedOcr;
+      } else {
+        logger.info(`[timing] OCR still running after ${Date.now() - t0}ms deadline — proceeding with empty text`);
       }
-      ocrMs = Date.now() - ocrStart; // near-zero when OCR finished before QR
     }
 
     let normalized: any = qrValue ? dissectPayload(qrValue) : null;
     const qrHit = !!(normalized && normalized.provider !== 'UNKNOWN' && normalized.txnReference);
 
-    // NOTE: parallelOcrPromise is intentionally NOT awaited here.
-    // processVerification starts immediately; OCR runs in the background.
-    // For the CBE token path the circuit fast-fails in ~0 ms, so OCR will
-    // typically be ready (or close to ready) by the time the fallback block runs.
+    // If the OCR race deadline fired (OCR was still running), OCR has been running
+    // in parallel with processVerification. Pick up any completed OCR result now
+    // (zero-wait: if OCR is still going, don't block further).
+    if (!extractedOcr.rawText) {
+      try {
+        const lateOcr = await Promise.race([ocrPromise, Promise.resolve(null)]);
+        if (lateOcr) {
+          extractedOcr = lateOcr;
+          logger.info(`[timing] Late OCR resolved before CBE finished (+${ocrDoneMs}ms): ${lateOcr.rawText?.length ?? 0} chars`);
+        }
+      } catch { /* non-fatal */ }
+    }
+
     const combinedRawText = [qrValue, extractedOcr.rawText].filter(Boolean).join('\n');
 
     // Use QR-based normalized payload if it succeeded; otherwise fall back to OCR
@@ -137,6 +155,16 @@ export const verifyImagePayload = async (req: AuthenticatedRequest, res: Respons
       rawText: combinedRawText,
       receiptImageUrl: 'UPLOADED_FILE_PROOF'
     });
+
+    // If OCR was still in-flight during CBE lookup, it should be done now.
+    // Await it (zero-wait) and update rawText for the fallback block.
+    if (!extractedOcr.rawText) {
+      try {
+        const finalOcr = await Promise.race([ocrPromise, Promise.resolve(null)]);
+        if (finalOcr) extractedOcr = finalOcr;
+      } catch { /* non-fatal */ }
+    }
+
     logger.info(`[timing] verifyMs=${Date.now() - tVerify} totalMs=${Date.now() - t0} status=${result.status}`);
 
     // ── FT legacy fallback for ISP-blocked CBE token endpoint ──────────────────
