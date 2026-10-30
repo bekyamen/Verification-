@@ -46,11 +46,12 @@ export const decodeReceiptQr = async (buffer: Buffer, mimetype: string): Promise
             imageBuffer = rendered;
         }
 
-        const runDecode = async (imgBuffer: Buffer): Promise<string | null> => {
+        /** Decode a prepared buffer. `invert` defaults to dontInvert for speed. */
+        const runDecode = async (imgBuffer: Buffer, invert: 'dontInvert' | 'attemptBoth' = 'dontInvert'): Promise<string | null> => {
             const { data, info } = await sharp(imgBuffer).raw().ensureAlpha().toBuffer({ resolveWithObject: true });
             const clampedArray = new Uint8ClampedArray(data.buffer);
             const code = jsQR(clampedArray, info.width, info.height, {
-                inversionAttempts: "attemptBoth"
+                inversionAttempts: invert
             });
             if (code && code.data) {
                 const qrData = code.data.trim();
@@ -67,43 +68,32 @@ export const decodeReceiptQr = async (buffer: Buffer, mimetype: string): Promise
             return null;
         };
 
-        // Pass 1: Original
-        let qrUrl = await runDecode(imageBuffer);
+        // Always auto-rotate first (EXIF orientation), then shrink to 900 px.
+        // jsQR cost is proportional to pixel count; 900 px is fast and still readable.
+        const small = await sharp(imageBuffer).rotate().resize({ width: 900, withoutEnlargement: true }).toBuffer();
+
+        // Pass 1: 900 px copy, no inversion (fastest path)
+        let qrUrl = await runDecode(small);
         if (qrUrl) return qrUrl;
 
-        // Pass 2: Grayscale + Contrast
-        const img = sharp(imageBuffer);
-        const pass2 = await img.clone().grayscale().linear(1.5, -0.2).toBuffer();
-        qrUrl = await runDecode(pass2);
+        // Pass 2: 900 px grayscale + contrast boost
+        qrUrl = await runDecode(await sharp(small).grayscale().linear(1.5, -0.2).toBuffer());
         if (qrUrl) return qrUrl;
 
-        // Pass 3: Scaled down
-        const metadata = await img.metadata();
-        if (metadata.width && metadata.width > 800) {
-            const pass3a = await img.clone().resize({ width: 800 }).toBuffer();
-            qrUrl = await runDecode(pass3a);
-            if (qrUrl) return qrUrl;
-        }
-        if (metadata.height && metadata.height > 800) {
-            const pass3b = await img.clone().resize({ height: 800 }).toBuffer();
-            qrUrl = await runDecode(pass3b);
-            if (qrUrl) return qrUrl;
-        }
-
-        // Pass 4: Crop bottom section
-        if (metadata.width && metadata.height && metadata.height > metadata.width * 1.2) {
-            const bottomHalfHeight = Math.floor(metadata.height / 2);
-            const pass4a = await img.clone().extract({ left: 0, top: bottomHalfHeight, width: metadata.width, height: bottomHalfHeight }).toBuffer();
-            qrUrl = await runDecode(pass4a);
-            if (qrUrl) return qrUrl;
-            
-            const bottomQuarterHeight = Math.floor(metadata.height * 0.25);
-            const pass4b = await img.clone().extract({ left: 0, top: metadata.height - bottomQuarterHeight, width: metadata.width, height: bottomQuarterHeight }).toBuffer();
-            qrUrl = await runDecode(pass4b);
+        // Pass 3: crop lower half of portrait receipts — QR is usually near the bottom
+        const meta = await sharp(imageBuffer).metadata();
+        if (meta.width && meta.height && meta.height > meta.width * 1.2) {
+            const top = Math.floor(meta.height / 2);
+            const crop = await sharp(imageBuffer)
+                .extract({ left: 0, top, width: meta.width, height: meta.height - top })
+                .resize({ width: 900, withoutEnlargement: true })
+                .toBuffer();
+            qrUrl = await runDecode(crop);
             if (qrUrl) return qrUrl;
         }
 
-        return null;
+        // Pass 4 (last resort): full-size original, allow inverted QR codes
+        return await runDecode(imageBuffer, 'attemptBoth');
     } catch (e) {
         return null; 
     }

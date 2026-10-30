@@ -40,12 +40,49 @@ const LEGACY_COMBINED_RE = /^(FT[A-Z0-9]{8,14})(\d{8})$/i; // FT...{8-digit suff
 
 const ACCOUNT_LENGTH = 13;
 const MAX_RETRIES = 2;
-const BASE_DELAY_MS = 300;
-const ATTEMPT_TIMEOUT_MS = 9_000;
+const BASE_DELAY_MS = 150;
+/** Timeout for the v2 token endpoint — kept short so ISP blocks fail fast. */
+const TOKEN_TIMEOUT_MS = 4_000;
+/** Timeout for the legacy apps.cbe.com.et portal — kept short; hedging covers slowness. */
+const LEGACY_TIMEOUT_MS = 5_000;
 
 // Keep-alive agents — reuses TCP connections across requests (saves ~300 ms handshake)
 const tokenAgent  = new https.Agent({ keepAlive: true });
 const legacyAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true });
+
+// ── Token-endpoint circuit breaker ────────────────────────────────────────────
+// Tracks consecutive network-level failures (ECONNABORTED, ETIMEDOUT, etc.).
+// After CIRCUIT_OPEN_THRESHOLD failures, the breaker opens for CIRCUIT_RESET_MS.
+// While open, callers skip the token fetch and receive FAILED_UPSTREAM immediately,
+// saving TOKEN_TIMEOUT_MS × accounts of dead-wait time per request.
+const CIRCUIT_OPEN_THRESHOLD = 1;  // open after the first network failure
+const CIRCUIT_RESET_MS       = 60_000; // stay open for 60 s then auto-reset
+
+let _circuitFailures  = 0;
+let _circuitOpenUntil = 0; // epoch ms; 0 = closed
+
+function circuitIsOpen(): boolean {
+  if (_circuitOpenUntil && Date.now() < _circuitOpenUntil) return true;
+  if (_circuitOpenUntil && Date.now() >= _circuitOpenUntil) {
+    // Half-open: allow one probe through, reset counter
+    _circuitOpenUntil = 0;
+    _circuitFailures  = 0;
+  }
+  return false;
+}
+
+function circuitOnSuccess(): void {
+  _circuitFailures  = 0;
+  _circuitOpenUntil = 0;
+}
+
+function circuitOnFailure(): void {
+  _circuitFailures++;
+  if (_circuitFailures >= CIRCUIT_OPEN_THRESHOLD) {
+    _circuitOpenUntil = Date.now() + CIRCUIT_RESET_MS;
+    logger.warn(`[CBE/circuit] Token endpoint circuit OPEN — will skip for ${CIRCUIT_RESET_MS / 1000}s`);
+  }
+}
 
 export interface VerifyResult {
   success: boolean;
@@ -255,11 +292,33 @@ async function extractFromHtmlSpa(html: string, token: string): Promise<VerifyRe
 // ── 1c. NEW CBE receipt token → JSON / PDF / SPA ─────────────────────────────
 
 async function verifyByToken(token: string): Promise<VerifyResult> {
+  // ── Feature flag ─────────────────────────────────────────────────────────────
+  // The CBE receipt viewer (mbreciept.cbe.com.et) currently returns an HTML SPA
+  // shell that exposes no usable API sub-paths, so every token lookup wastes ~7 s
+  // before falling through to the legacy FT route.  Keep this route disabled until
+  // the viewer starts returning JSON again.  Set CBE_TOKEN_ROUTE=on to re-enable.
+  if (process.env.CBE_TOKEN_ROUTE !== 'on') {
+    logger.info('[CBE/token] Skipped — set CBE_TOKEN_ROUTE=on to enable (SPA returns no data).');
+    return { success: false, error: 'CBE receipt-link lookup is disabled (viewer returns no data).', statusCode: 502 };
+  }
+
   // URL format: https://mbreciept.cbe.com.et/v2-{token}
   // token already contains the "v2-" prefix (e.g. "v2-hfHCxHm0dwBHOQSgWNOf")
   const url = `${CBE_JSON_API_BASE}/${token}`;
 
+  // ── Circuit-breaker check ────────────────────────────────────────────────────
+  if (circuitIsOpen()) {
+    logger.warn('[CBE/token] Circuit is OPEN — fast-failing to allow legacy/FT fallback');
+    return { success: false, error: 'CBE token endpoint unreachable (circuit open).', statusCode: 502 };
+  }
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    // Re-check circuit at the start of every retry: if attempt 1 opened it,
+    // skip attempt 2 immediately instead of waiting for another full timeout.
+    if (attempt > 1 && circuitIsOpen()) {
+      logger.warn(`[CBE/token] Circuit opened during attempt ${attempt - 1} — skipping remaining retries`);
+      break;
+    }
     try {
       logger.info(`[CBE/token] Fetching (attempt ${attempt}/${MAX_RETRIES}): ${url}`);
 
@@ -274,9 +333,10 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
           'Referer': 'https://mbreciept.cbe.com.et/',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
-        timeout: ATTEMPT_TIMEOUT_MS,
+        timeout: TOKEN_TIMEOUT_MS,
         responseType: 'arraybuffer',
       });
+      circuitOnSuccess(); // Received a response — endpoint is reachable
 
       const buf = Buffer.from(response.data);
       const contentType = ((response.headers['content-type'] as string) ?? '').toLowerCase();
@@ -432,11 +492,14 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
         return { success: false, error: 'CBE API authentication failed. Check CBE_APP_ID/CBE_APP_VERSION.', statusCode: 503 };
       }
 
-      if (isRetryable(axiosErr) && attempt < MAX_RETRIES) {
-        const delay = BASE_DELAY_MS * 2 ** (attempt - 1);
-        logger.warn(`[CBE/token] Network error, retrying in ${delay}ms… [${axiosErr.code}]`);
-        await sleep(delay);
-        continue;
+      if (isRetryable(axiosErr)) {
+        circuitOnFailure();
+        if (attempt < MAX_RETRIES) {
+          const delay = BASE_DELAY_MS * 2 ** (attempt - 1);
+          logger.warn(`[CBE/token] Network error, retrying in ${delay}ms… [${axiosErr.code}]`);
+          await sleep(delay);
+          continue;
+        }
       }
 
       const msg = axiosErr.message;
@@ -599,73 +662,127 @@ function parseCbePdfText(text: string): VerifyResult {
   return { success: true, payer, payerAccount, receiver, receiverAccount, amount, date, reference, reason: reason ?? null };
 }
 
+/**
+ * Start `run`, and if it has not resolved/rejected after `hedgeAfterMs`, launch
+ * another copy. First result wins; all others are discarded.
+ */
+function hedged<T>(run: () => Promise<T>, hedgeAfterMs = 2_500, max = 3): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let launched = 0, pending = 0, done = false, lastErr: unknown;
+    let timer: NodeJS.Timeout | undefined;
+
+    const finish = (fn: () => void) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      fn();
+    };
+
+    const launch = () => {
+      if (done || launched >= max) return;
+      launched++; pending++;
+      if (launched < max) timer = setTimeout(launch, hedgeAfterMs);
+
+      run().then(
+        (v) => finish(() => resolve(v)),
+        (e) => {
+          lastErr = e; pending--;
+          if (done) return;
+          if (launched < max) { if (timer) clearTimeout(timer); launch(); }
+          else if (pending === 0) finish(() => reject(lastErr));
+        },
+      );
+    };
+
+    launch();
+  });
+}
+
+type LegacyBody =
+  | { notFound: true }
+  | { notFound: false; buf: Buffer; contentType: string };
+
+// Hard cap per request. Raise it if the timing lines show CBE normally needs longer.
+const LEGACY_TOTAL_TIMEOUT_MS = Number(process.env.CBE_LEGACY_TIMEOUT_MS ?? 10_000);
+const LEGACY_HEDGE_MS = Number(process.env.CBE_HEDGE_MS ?? 4_000);
+const LEGACY_HEDGE_MAX = Number(process.env.CBE_HEDGE_MAX ?? 1); // 1 = no hedging
+
+async function legacyFetchOnce(url: string, t0: number): Promise<LegacyBody> {
+  const s = Date.now();
+  try {
+    const response = await axios.get(url, {
+      httpsAgent: legacyAgent,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/pdf,*/*',
+      },
+      timeout: LEGACY_TOTAL_TIMEOUT_MS,
+      // axios `timeout` only covers idle sockets; this caps the whole request
+      signal: AbortSignal.timeout(LEGACY_TOTAL_TIMEOUT_MS),
+      responseType: 'arraybuffer',
+    });
+    logger.info(`[CBE/legacy] attempt started +${s - t0}ms, answered in ${Date.now() - s}ms`);
+    return {
+      notFound: false,
+      buf: Buffer.from(response.data),
+      contentType: ((response.headers['content-type'] as string) ?? '').toLowerCase(),
+    };
+  } catch (err) {
+    if ((err as AxiosError).response?.status === 404) return { notFound: true };
+    logger.warn(`[CBE/legacy] attempt started +${s - t0}ms, failed after ${Date.now() - s}ms: ${(err as Error).message}`);
+    throw err; // let hedged() start another copy when hedging is on
+  }
+}
+
 async function verifyByLegacyUrl(combinedId: string): Promise<VerifyResult> {
   const url = `${CBE_LEGACY_BASE}/?id=${combinedId}`;
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      logger.info(`[CBE/legacy] Fetching receipt (attempt ${attempt}/${MAX_RETRIES}): ${url}`);
-
-      // Fetch as binary so we can handle both HTML and PDF responses
-      const response = await axios.get(url, {
-        httpsAgent: legacyAgent,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/pdf,*/*',
-        },
-        timeout: ATTEMPT_TIMEOUT_MS,
-        responseType: 'arraybuffer',
-      });
-
-      const contentType = ((response.headers['content-type'] as string) ?? '').toLowerCase();
-      logger.info(`[CBE/legacy] Response content-type: ${contentType}`);
-
-      if (contentType.includes('application/pdf')) {
-        // ── PDF path ──────────────────────────────────────────────────────────
-        logger.info('[CBE/legacy] Detected PDF receipt — extracting text with pdf-parse');
-        const pdfParser = new PDFParse({ data: Buffer.from(response.data) });
-        let pdfText: string;
-        try {
-          const result = await pdfParser.getText();
-          pdfText = result.text;
-        } finally {
-          await pdfParser.destroy().catch(() => undefined);
-        }
-        if (process.env.LOG_CHECK_RAW === '1') {
-          logger.debug(`[CBE/legacy-pdf] Extracted text (first 3000 chars):\n${pdfText.slice(0, 3000)}`);
-        }
-        return parseCbePdfText(pdfText);
-      } else {
-        // ── HTML path ─────────────────────────────────────────────────────────
-        const html = Buffer.from(response.data).toString('utf8');
-        if (process.env.LOG_CHECK_RAW === '1') {
-          logger.debug(`[CBE/legacy] Raw HTML (first 2000 chars): ${html.slice(0, 2000)}`);
-        }
-        return parseLegacyHtml(html);
-      }
-    } catch (err: any) {
-      const axiosErr = err as AxiosError;
-
-      if (axiosErr.response?.status === 404) {
-        return { success: false, error: 'CBE legacy receipt not found.', statusCode: 404 };
-      }
-
-      if (isRetryable(axiosErr) && attempt < MAX_RETRIES) {
-        const delay = BASE_DELAY_MS * 2 ** (attempt - 1);
-        logger.warn(`[CBE/legacy] Network error, retrying in ${delay}ms… [${axiosErr.code}]`);
-        await sleep(delay);
-        continue;
-      }
-
-      logger.warn(`[CBE/legacy] Failed: ${axiosErr.message}`);
-      return { success: false, error: axiosErr.message, statusCode: axiosErr.response?.status ?? 502 };
+  const t0 = Date.now();
+  try {
+    const body = await hedged(() => legacyFetchOnce(url, t0), LEGACY_HEDGE_MS, LEGACY_HEDGE_MAX);
+    const fetchMs = Date.now() - t0;
+    if (body.notFound) {
+      logger.info(`[CBE/legacy] 404 after ${fetchMs}ms`);
+      return { success: false, error: 'CBE legacy receipt not found.', statusCode: 404 };
     }
-  }
 
-  return { success: false, error: 'CBE legacy request failed after retries.', statusCode: 502 };
+    const t1 = Date.now();
+    let result: VerifyResult;
+    const isPdf = body.contentType.includes('application/pdf') || body.buf.subarray(0, 4).toString('latin1') === '%PDF';
+    if (isPdf) {
+      const parser = new PDFParse({ data: body.buf });
+      try {
+        result = parseCbePdfText((await parser.getText()).text);
+      } finally {
+        await parser.destroy().catch(() => undefined);
+      }
+    } else {
+      const html = body.buf.toString('utf8');
+      if (process.env.LOG_CHECK_RAW === '1') {
+        logger.debug(`[CBE/legacy] Raw HTML (first 2000 chars): ${html.slice(0, 2000)}`);
+      }
+      result = parseLegacyHtml(html);
+    }
+    logger.info(`[CBE/legacy] fetch=${fetchMs}ms parse=${Date.now() - t1}ms`);
+    return result;
+  } catch (err: any) {
+    logger.warn(`[CBE/legacy] failed after ${Date.now() - t0}ms: ${err.message}`);
+    return { success: false, error: err.message, statusCode: (err as AxiosError).response?.status ?? 502 };
+  }
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
+
+const WARM_PDF = Buffer.from(
+  '%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
+  '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n' +
+  '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 10 10]>>endobj\n' +
+  'trailer<</Root 1 0 R>>\n%%EOF',
+);
+
+export async function warmPdf(): Promise<void> {
+  const p = new PDFParse({ data: WARM_PDF });
+  try { await p.getText(); } catch { /* best effort */ } finally { await p.destroy().catch(() => undefined); }
+}
 
 /**
  * Verify a CBE payment using the bank's official endpoints directly.
@@ -678,6 +795,21 @@ async function verifyByLegacyUrl(combinedId: string): Promise<VerifyResult> {
  *
  * @param accountNumber — Full 13-digit receiving account (required for FT references only).
  */
+
+/** Cache successes only. On failure return the real error instead of running the lookup again. */
+async function cachedLookup(key: string, run: () => Promise<VerifyResult>): Promise<VerifyResult> {
+  let failure: VerifyResult | null = null;
+  const hit = await cbeCache.getOrFetch(key, async () => {
+    const r = await run();
+    if (r.success) return r;
+    failure = r;
+    return null;
+  });
+  const f = failure as VerifyResult | null;
+  // run() again only if another caller's in-flight fetch failed and we never saw its error
+  return hit ?? f ?? run();
+}
+
 export async function verifyCBE(reference: string, accountNumber?: string): Promise<VerifyResult> {
   const ref = reference.trim();
 
@@ -685,26 +817,22 @@ export async function verifyCBE(reference: string, accountNumber?: string): Prom
   const newUrlMatch = ref.match(MBRECIEPT_URL_RE);
   if (newUrlMatch) {
     const token = newUrlMatch[1];
-    return cbeCache.getOrFetch(token, () => verifyByToken(token).then(r => r.success ? r : null)
-    ).then(r => r ?? verifyByToken(token));
+    return cachedLookup(token, () => verifyByToken(token));
   }
 
   // ── New receipt token (not an FT reference) ─────────────────────────────────
   if (TOKEN_RE.test(ref) && !FT_RE.test(ref)) {
-    return cbeCache.getOrFetch(ref, () => verifyByToken(ref).then(r => r.success ? r : null)
-    ).then(r => r ?? verifyByToken(ref));
+    return cachedLookup(ref, () => verifyByToken(ref));
   }
 
   // ── Legacy apps.cbe.com.et URL ──────────────────────────────────────────────
   if (LEGACY_APPS_URL_RE.test(ref)) {
     try {
-      const parsed = new URL(ref);
-      const combinedId = parsed.searchParams.get('id') ?? '';
+      const combinedId = new URL(ref).searchParams.get('id') ?? '';
       if (!combinedId) {
         return { success: false, error: 'Legacy CBE URL is missing the id parameter.', statusCode: 400 };
       }
-      return cbeCache.getOrFetch(combinedId, () => verifyByLegacyUrl(combinedId).then(r => r.success ? r : null)
-      ).then(r => r ?? verifyByLegacyUrl(combinedId));
+      return cachedLookup(combinedId, () => verifyByLegacyUrl(combinedId));
     } catch {
       return { success: false, error: 'Could not parse legacy CBE URL.', statusCode: 400 };
     }
@@ -720,11 +848,8 @@ export async function verifyCBE(reference: string, accountNumber?: string): Prom
         statusCode: 400,
       };
     }
-    // Build the combined ID the legacy portal expects: FT...{last-8-digits-of-account}
-    const suffix = acct.slice(-8);
-    const combinedId = `${ref.toUpperCase()}${suffix}`;
-    return cbeCache.getOrFetch(combinedId, () => verifyByLegacyUrl(combinedId).then(r => r.success ? r : null)
-    ).then(r => r ?? verifyByLegacyUrl(combinedId));
+    const combinedId = `${ref.toUpperCase()}${acct.slice(-8)}`;
+    return cachedLookup(combinedId, () => verifyByLegacyUrl(combinedId));
   }
 
   return { success: false, error: 'Unrecognised CBE reference format.', statusCode: 400 };

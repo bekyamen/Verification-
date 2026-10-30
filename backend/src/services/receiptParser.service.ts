@@ -107,6 +107,18 @@ async function ensureWorkerPool(): Promise<void> {
   return poolInitPromise;
 }
 
+/**
+ * Call once at server startup to boot Tesseract workers in the background.
+ * This ensures the first image request doesn't wait for worker initialisation.
+ */
+export function warmOcrWorkers(): void {
+  ensureWorkerPool().catch((err) => {
+    console.warn('[OCR] Worker pre-warm failed:', err?.message ?? err);
+  });
+}
+
+export const warmOcr = () => ensureWorkerPool().catch(() => undefined);
+
 /** Round-robin worker selection. Both workers are always kept alive. */
 async function getWorker(): Promise<any> {
   await ensureWorkerPool();

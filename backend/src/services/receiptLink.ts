@@ -58,11 +58,12 @@ export function parseReceiptLink(raw: string): ParsedReceiptLink | null {
       return { provider: 'CBE', ref: pathToken };
     }
 
-    // Query-param style: ?ref=FT... or ?txnId=...
+    // Query-param style: ?ref=FT... or ?txnId=... or ?id=FT... (legacy portal)
     const ref =
       parsed.searchParams.get('ref') ||
       parsed.searchParams.get('txnId') ||
-      parsed.searchParams.get('token');
+      parsed.searchParams.get('token') ||
+      parsed.searchParams.get('id');
     if (ref && ref.length >= 6) {
       return { provider: 'CBE', ref };
     }

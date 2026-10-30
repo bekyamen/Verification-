@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
 import apiRoutes from './routes/api.routes';
 import authRoutes from './routes/auth.routes';
+import { warmOcrWorkers, warmOcr } from './services/receiptParser.service';
+import { warmPdf } from './services/verifyCBE';
 
 dotenv.config();
 
@@ -28,5 +30,10 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 
 app.listen(port, () => {
   console.log(`CheckFlow ET Backend Engine running on port ${port}`);
+  // Pre-warm Tesseract workers in background so first image request doesn't wait
+  warmOcrWorkers();
+  warmOcr();
+  warmPdf();
 });
+
 

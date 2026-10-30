@@ -67,50 +67,61 @@ export const verifyImagePayload = async (req: AuthenticatedRequest, res: Respons
 
     const t0 = Date.now();
 
-    // ── Phase 1: Try QR decode first — it's fast (~50 ms) ─────────────────────
-    // If QR returns a recognised CBE or Telebirr receipt URL we skip OCR entirely,
-    // saving 2-4 seconds of Tesseract processing time.
+    // ── Phase 1+2: Start OCR immediately — it runs in a Tesseract worker while ──
+    // QR decode runs here on the main thread. Total wait = max(QR, OCR), not sum.
+    let ocrDoneMs = -1;
+    const ocrPromise = parseFileBuffer(req.file.buffer, req.file.mimetype)
+      .then((r) => { ocrDoneMs = Date.now() - t0; return r; })
+      .catch(() => { ocrDoneMs = Date.now() - t0; return null; });
+
     const qrValue = await decodeReceiptQr(req.file.buffer, req.file.mimetype);
     const qrMs = Date.now() - t0;
 
     // A QR hit is a URL that parseReceiptLink accepts (CBE / Telebirr only)
     const qrIsReceiptUrl = !!qrValue && parseReceiptLink(qrValue) !== null;
+    const qrIsCbeToken   = qrIsReceiptUrl && !!(qrValue?.includes('mbreciept.cbe.com.et') || qrValue?.includes('mbreceipt.cbe.com.et'));
 
     let extractedOcr: { provider: any; txnReference: string | null; amount?: number | null; rawText?: string } = {
       provider: 'UNKNOWN', txnReference: '', amount: undefined, rawText: ''
     };
     let ocrMs = 0;
 
+    // Use ocrPromise as the parallel OCR for the CBE token fallback path
+    const parallelOcrPromise = qrIsCbeToken ? ocrPromise : null;
+
     if (!qrIsReceiptUrl) {
-      // ── Phase 2: OCR — only when QR didn't give us a known receipt URL ───────
+      // ── Await OCR — usually already finished or close to finishing ────────────
       const ocrStart = Date.now();
       try {
-        extractedOcr = await parseFileBuffer(req.file.buffer, req.file.mimetype);
+        extractedOcr = (await ocrPromise) ?? extractedOcr;   // time spent WAITING after QR
       } catch {
         // OCR failure is non-fatal — carry on with whatever QR found
       }
-      ocrMs = Date.now() - ocrStart;
+      ocrMs = Date.now() - ocrStart; // near-zero when OCR finished before QR
     }
 
     let normalized: any = qrValue ? dissectPayload(qrValue) : null;
     const qrHit = !!(normalized && normalized.provider !== 'UNKNOWN' && normalized.txnReference);
 
-    console.info(
-      `[timing] image-verify qrMs=${qrMs} ocrMs=${ocrMs} qrHit=${qrHit} qrIsReceiptUrl=${qrIsReceiptUrl} totalMs=${Date.now() - t0}`
-    );
-
-    // Build combined raw text (QR URL + OCR text, if any)
+    // NOTE: parallelOcrPromise is intentionally NOT awaited here.
+    // processVerification starts immediately; OCR runs in the background.
+    // For the CBE token path the circuit fast-fails in ~0 ms, so OCR will
+    // typically be ready (or close to ready) by the time the fallback block runs.
     const combinedRawText = [qrValue, extractedOcr.rawText].filter(Boolean).join('\n');
 
     // Use QR-based normalized payload if it succeeded; otherwise fall back to OCR
     if (!normalized || normalized.provider === 'UNKNOWN' || !normalized.txnReference) {
       normalized = combinedRawText ? dissectPayload(combinedRawText) : { provider: 'UNKNOWN', txnReference: '' };
     }
+    logger.info(
+      `[timing] image-verify qrMs=${qrMs} ocrMs=${ocrMs} qrHit=${qrHit} qrIsReceiptUrl=${qrIsReceiptUrl} preLookupMs=${Date.now() - t0}`
+    );
 
     // Keep a reference to the image buffer — we may need it for a late OCR retry
     const imageBuffer = req.file.buffer;
     const imageMime   = req.file.mimetype;
 
+    const tVerify = Date.now();
     const result = await processVerification({
       branchId,
       cashierId,
@@ -126,53 +137,72 @@ export const verifyImagePayload = async (req: AuthenticatedRequest, res: Respons
       rawText: combinedRawText,
       receiptImageUrl: 'UPLOADED_FILE_PROOF'
     });
+    logger.info(`[timing] verifyMs=${Date.now() - tVerify} totalMs=${Date.now() - t0} status=${result.status}`);
 
-    // ── Late OCR fallback for QR-only CBE failures ─────────────────────────────
-    // If: (a) the QR gave us a v2 token URL, (b) OCR was skipped (ocrMs=0),
-    // and (c) the result is FAILED_UPSTREAM — run OCR now to look for an FT
-    // reference printed on the receipt and retry via the legacy HTML route.
-    // This recovers receipts where CBE's v2 endpoint returns an SPA shell
-    // but the cashier's image has "FT26286ZF0XC" legibly printed on it.
+    // ── FT legacy fallback for ISP-blocked CBE token endpoint ──────────────────
+    // If processVerification returned 502 AND the QR was a CBE v2 URL:
+    //   1. Await the parallel OCR (it has been running since right after QR finished)
+    //   2. Extract the FT reference printed on the receipt
+    //   3. Retry via the legacy apps.cbe.com.et route which is not ISP-blocked
     if (
       result.status === 502 &&
-      qrIsReceiptUrl &&
-      normalized.provider === 'CBE' &&
-      ocrMs === 0 // OCR was skipped
+      qrIsReceiptUrl &&   // OCR was not the primary path (we ran it in parallel instead)
+      normalized.provider === 'CBE'
     ) {
-      logger.info('[image-verify] QR-only CBE FAILED_UPSTREAM — running late OCR to find FT reference');
-      try {
-        const lateOcr = await parseFileBuffer(imageBuffer, imageMime);
-        const ocrText = lateOcr.rawText ?? '';
-        logger.info(`[image-verify] Late OCR complete. Text length: ${ocrText.length}`);
+      let ocrText = '';
 
-        // Extract FT reference from OCR text
-        const ftMatch =
-          ocrText.match(/\b(FT[A-Z0-9]{8,14})\b/i) ??
-          ocrText.match(/(FT[A-Z0-9]{10})/i);
-
-        if (ftMatch) {
-          const ftRef = ftMatch[1].toUpperCase();
-          logger.info(`[image-verify] Late OCR found FT reference: ${ftRef} — retrying via legacy route`);
-
-          const ftResult = await processVerification({
-            branchId,
-            cashierId,
-            provider: 'CBE',
-            txnReference: ftRef,
-            amount: lateOcr.amount || undefined,
-            expectedAmount,
-            rawText: ocrText,
-            receiptImageUrl: 'UPLOADED_FILE_PROOF',
-          });
-
-          res.status(ftResult.status).json(ftResult.result);
-          return;
-        }
-
-        logger.warn('[image-verify] Late OCR ran but found no FT reference. Returning original FAILED_UPSTREAM.');
-      } catch (ocrErr: any) {
-        logger.warn(`[image-verify] Late OCR failed: ${ocrErr.message}`);
+      if (parallelOcrPromise) {
+        // parallelOcrPromise has been running in background since QR completed.
+        // With circuit threshold=1, processVerification fails in <100 ms on ISP blocks,
+        // so we wait here for the remaining OCR duration.
+        try {
+          const ocrResult = await parallelOcrPromise;
+          ocrText = ocrResult?.rawText ?? '';
+          if (ocrText) {
+          logger.info(`[image-verify] Background OCR ready (${ocrText.length} chars), finished at +${ocrDoneMs}ms`);
+          }
+        } catch { /* non-fatal */ }
       }
+
+      if (!ocrText) {
+        // ocrPromise was running since before QR decode — grab it first, then fallback
+        logger.info('[image-verify] CBE FAILED_UPSTREAM — awaiting background OCR or running last-resort');
+        try {
+          const lateOcr = (await ocrPromise) ?? (await parseFileBuffer(imageBuffer, imageMime));
+          ocrText = lateOcr?.rawText ?? '';
+          logger.info(`[image-verify] OCR complete. Text length: ${ocrText.length}`);
+        } catch (ocrErr: any) {
+          logger.warn(`[image-verify] OCR failed: ${ocrErr.message}`);
+        }
+      }
+
+      // Extract FT reference from OCR text
+      const ftMatch =
+        ocrText.match(/\b(FT[A-Z0-9]{8,14})\b/i) ??
+        ocrText.match(/(FT[A-Z0-9]{10})/i);
+
+      if (ftMatch) {
+        const ftRef = ftMatch[1].toUpperCase();
+        logger.info(`[image-verify] FT reference: ${ftRef} — retrying via legacy route`);
+
+        const tRetry = Date.now();
+        const ftResult = await processVerification({
+          branchId,
+          cashierId,
+          provider: 'CBE',
+          txnReference: ftRef,
+          amount: extractedOcr.amount || undefined,
+          expectedAmount,
+          rawText: ocrText,
+          receiptImageUrl: 'UPLOADED_FILE_PROOF',
+        });
+        logger.info(`[timing] retryMs=${Date.now() - tRetry} totalMs=${Date.now() - t0}`);
+
+        res.status(ftResult.status).json(ftResult.result);
+        return;
+      }
+
+      logger.warn('[image-verify] No FT reference found — returning original FAILED_UPSTREAM.');
     }
 
     res.status(result.status).json(result.result);
