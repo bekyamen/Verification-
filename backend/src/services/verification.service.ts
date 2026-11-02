@@ -152,22 +152,6 @@ export const processVerification = async (options: VerificationRequest) => {
       }
     }
 
-    // ── Receipt age check ──────────────────────────────────────────────────────
-    if (finalStatus === 'VERIFIED' && providerResult.date) {
-      const RECEIPT_MAX_AGE_DAYS = parseInt(process.env.RECEIPT_MAX_AGE_DAYS ?? '14', 10);
-      const ageDays = (Date.now() - providerResult.date.getTime()) / (1000 * 60 * 60 * 24);
-      if (ageDays > RECEIPT_MAX_AGE_DAYS) {
-        return {
-          status: 422,
-          result: {
-            status: 'INVALID_RECEIPT',
-            message: `Receipt is ${Math.floor(ageDays)} days old (maximum allowed: ${RECEIPT_MAX_AGE_DAYS} days).`,
-            provider,
-            txnReference: canonicalRef,
-          }
-        };
-      }
-    }
 
     if (finalStatus === 'NEEDS_SUFFIX') {
        return { status: 400, result: { status: 'NEEDS_SUFFIX', message: providerResult.message || 'Legacy CBE FT reference requires the last 8 digits of the receiver account. Please enter manually.' } };

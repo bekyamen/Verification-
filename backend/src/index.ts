@@ -1,13 +1,14 @@
+import dotenv from 'dotenv';
+dotenv.config();   // ← must run BEFORE any module that reads process.env at load time
+
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
 import apiRoutes from './routes/api.routes';
 import authRoutes from './routes/auth.routes';
 import { warmOcrWorkers, warmOcr } from './services/receiptParser.service';
 import { warmPdf } from './services/verifyCBE';
-
-dotenv.config();
+import { startBot } from './telegram/bot';
 
 
 const app = express();
@@ -34,6 +35,11 @@ app.listen(port, () => {
   warmOcrWorkers();
   warmOcr();
   warmPdf();
+  // Start Telegram bot (long-polling) alongside Express
+  startBot();
 });
+
+
+
 
 

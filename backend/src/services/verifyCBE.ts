@@ -703,10 +703,15 @@ type LegacyBody =
   | { notFound: true }
   | { notFound: false; buf: Buffer; contentType: string };
 
-// Hard cap per request. Target ≤5 s total. Raise via env-vars if CBE is consistently slower.
-const LEGACY_TOTAL_TIMEOUT_MS = Number(process.env.CBE_LEGACY_TIMEOUT_MS ?? 4_500);
+// Hard cap per request.
+// CBE typically replies in 5.5–7.4 s, so the old 4.5 s cap was cancelling every attempt.
+// Set to 20 s; lower via CBE_LEGACY_TIMEOUT_MS env-var once the .env loading issue is resolved.
+const LEGACY_TOTAL_TIMEOUT_MS = Number(process.env.CBE_LEGACY_TIMEOUT_MS ?? 20_000);
 const LEGACY_HEDGE_MS         = Number(process.env.CBE_HEDGE_MS          ?? 2_000);
-const LEGACY_HEDGE_MAX        = Number(process.env.CBE_HEDGE_MAX          ?? 2);   // 2 = hedge after 2 s
+// Set to 1 to disable hedging — a single CBE lookup takes 5–7 s so a second copy launched
+// at 2 s only doubles the load without saving time. Re-enable (set to 2+) if CBE becomes
+// reliably faster. Override via CBE_HEDGE_MAX env-var.
+const LEGACY_HEDGE_MAX        = Number(process.env.CBE_HEDGE_MAX          ?? 1);   // 1 = no hedging
 
 async function legacyFetchOnce(url: string, t0: number): Promise<LegacyBody> {
   const s = Date.now();
