@@ -10,6 +10,8 @@
  *   🔗 Text URL        → CBE / Telebirr receipt URL → bank verification
  *   ✉️  Text reference  → Raw text / FT reference → bank verification
  *   /manual            → Manual provider + reference + optional amount entry
+ *   /addaccount        → Register a new CBE/TELEBIRR/BOA/AWASH receiving account
+ *   /accounts          → List all registered receiving accounts
  *   /start, /help      → Usage instructions
  *   /status            → Check if bot is running and config is valid
  *
@@ -26,6 +28,8 @@ import { processVerification } from '../services/verification.service';
 import { dissectPayload } from '../services/linkDissector';
 import { parseRawText } from '../services/receiptParser.service';
 import logger from '../utils/logger';
+import prisma from '../utils/prisma';
+import { accountsCache } from '../utils/verifyCache';
 
 // ── Configuration (read lazily so dotenv has time to run) ────────────────────
 
@@ -44,6 +48,36 @@ const SUPPORTED_PROVIDERS = [
 ] as const;
 
 type Provider = typeof SUPPORTED_PROVIDERS[number];
+
+// ── Account registration wizard ───────────────────────────────────────────────
+
+const ACCOUNT_PROVIDERS = ['CBE', 'TELEBIRR', 'BOA', 'AWASH'] as const;
+type AccountProvider = typeof ACCOUNT_PROVIDERS[number];
+
+type WizardStep = 'provider' | 'accountNumber' | 'holderName';
+
+interface WizardState {
+  step: WizardStep;
+  provider?: AccountProvider;
+  accountNumber?: string;
+  expiresAt: number; // ms timestamp
+}
+
+/** Per-chat wizard sessions. Cleaned up on completion or timeout. */
+const wizardSessions = new Map<number, WizardState>();
+const WIZARD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+function startWizard(chatId: number): void {
+  wizardSessions.set(chatId, { step: 'provider', expiresAt: Date.now() + WIZARD_TIMEOUT_MS });
+}
+
+function clearWizard(chatId: number): void {
+  wizardSessions.delete(chatId);
+}
+
+function isWizardExpired(state: WizardState): boolean {
+  return Date.now() > state.expiresAt;
+}
 
 // ── Startup validation ───────────────────────────────────────────────────────
 
@@ -124,6 +158,11 @@ async function sendTyping(ctx: Context): Promise<void> {
   } catch { /* non-critical */ }
 }
 
+// ── Helper: escape special MarkdownV2 characters ─────────────────────────────
+function escapeMarkdown(text: string): string {
+  return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+}
+
 // ── Helper: run raw-text / URL verification via processVerification ──────────
 async function verifyText(
   text: string,
@@ -195,15 +234,17 @@ export function createBot(): Bot {
       `/start — Welcome message & usage guide\n` +
       `/help — Show this help\n` +
       `/status — Show bot configuration status\n` +
-      `/manual — Manual verification entry\n\n` +
+      `/manual — Manual verification entry\n` +
+      `/accounts — List registered receiving accounts\n` +
+      `/addaccount — Register a new receiving account\n\n` +
       `*Manual entry format:*\n` +
-      `\`/manual PROVIDER TXN\\_REF \\[AMOUNT\\]\`\n\n` +
+      `\`/manual PROVIDER TXN\_REF \[AMOUNT\]\`\n\n` +
       `Examples:\n` +
       `\`/manual CBE FT26300XXXXXX\`\n` +
       `\`/manual CBE FT26300XXXXXX 1500\`\n` +
       `\`/manual TELEBIRR SB9876543210 500\`\n\n` +
       `*Supported providers:*\n` +
-      `\`CBE · TELEBIRR · DASHEN · AWASH · BOA · ZEMEN · CBE\\_BIRR · MPESA · SIINQEE\``,
+      `\`CBE · TELEBIRR · DASHEN · AWASH · BOA · ZEMEN · CBE\_BIRR · MPESA · SIINQEE\``,
       { parse_mode: 'MarkdownV2' }
     );
   });
@@ -282,7 +323,85 @@ export function createBot(): Bot {
     }
   });
 
-  // ── Photo handler: receipt screenshot ─────────────────────────────────────
+  // ── /accounts ──────────────────────────────────────────────────────────────
+  bot.command('accounts', async (ctx) => {
+    try {
+      const branch = await prisma.branch.findUnique({
+        where: { id: BOT_BRANCH_ID() },
+        include: {
+          organization: {
+            include: {
+              bankSettlementAccounts: { orderBy: { bankName: 'asc' } }
+            }
+          }
+        }
+      });
+
+      const accounts = branch?.organization?.bankSettlementAccounts ?? [];
+
+      if (accounts.length === 0) {
+        await ctx.reply(
+          `📋 *Registered Receiving Accounts*\n\n` +
+          `_No accounts registered yet\._\n\n` +
+          `Use /addaccount to register your first CBE or Telebirr receiving account\.`,
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+
+      // Group by bank
+      const grouped: Record<string, typeof accounts> = {};
+      for (const acc of accounts) {
+        if (!grouped[acc.bankName]) grouped[acc.bankName] = [];
+        grouped[acc.bankName].push(acc);
+      }
+
+      const bankEmoji: Record<string, string> = {
+        CBE: '🏦', TELEBIRR: '📱', BOA: '🏛️', AWASH: '🏦'
+      };
+
+      let msg = `📋 *Registered Receiving Accounts*\n`;
+      for (const [bank, accs] of Object.entries(grouped)) {
+        const emoji = bankEmoji[bank] ?? '🏦';
+        msg += `\n${emoji} *${bank}*\n`;
+        for (const a of accs) {
+          const status = a.isActive ? '✅' : '❌ inactive';
+          msg += `  • \`${a.accountNumber}\` — ${escapeMarkdown(a.accountHolderName)} ${status}\n`;
+        }
+      }
+      msg += `\nUse /addaccount to add another account\.`;
+
+      await ctx.reply(msg, { parse_mode: 'MarkdownV2' });
+    } catch (err: any) {
+      logger.error(`[telegram] /accounts error: ${err.message}`);
+      await ctx.reply('🆘 Failed to fetch accounts\. Please try again\.', { parse_mode: 'MarkdownV2' });
+    }
+  });
+
+  // ── /addaccount ────────────────────────────────────────────────────────────
+  bot.command('addaccount', async (ctx) => {
+    const chatId = ctx.chat!.id;
+    startWizard(chatId);
+    await ctx.reply(
+      `🏦 *Register a Receiving Account*\n\n` +
+      `Step 1 of 3 — Which provider?\n` +
+      `Reply with one of: \`CBE\`, \`TELEBIRR\`, \`BOA\`, \`AWASH\`\n\n` +
+      `_Send /cancel to abort at any time\._`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  });
+
+  // ── /cancel ────────────────────────────────────────────────────────────────
+  bot.command('cancel', async (ctx) => {
+    const chatId = ctx.chat!.id;
+    if (wizardSessions.has(chatId)) {
+      clearWizard(chatId);
+      await ctx.reply('❌ Account registration cancelled\.', { parse_mode: 'MarkdownV2' });
+    } else {
+      await ctx.reply('Nothing to cancel\.', { parse_mode: 'MarkdownV2' });
+    }
+  });
+
   // We send the ack reply BEFORE verification so the update is considered handled.
   // The final result reply is in its own try/catch so a Telegram ETIMEDOUT never
   // causes grammy to re-deliver the same photo and re-run CBE.
@@ -367,13 +486,146 @@ export function createBot(): Bot {
     }
   });
 
-  // ── Text handler: URL or raw transaction reference ─────────────────────────
+  // ── Text handler: URL, raw transaction reference, OR wizard input ─────────
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text.trim();
+    const chatId = ctx.chat!.id;
 
     // Ignore messages that look like commands (handled above)
     if (text.startsWith('/')) return;
 
+    // ── Wizard intercept ──────────────────────────────────────────────────────
+    const wizardState = wizardSessions.get(chatId);
+    if (wizardState) {
+      // Expire stale sessions
+      if (isWizardExpired(wizardState)) {
+        clearWizard(chatId);
+        await ctx.reply(
+          '⏰ Account registration timed out\. Send /addaccount to start again\.',
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+
+      // ── Step 1: provider ────────────────────────────────────────────────────
+      if (wizardState.step === 'provider') {
+        const input = text.toUpperCase() as AccountProvider;
+        if (!ACCOUNT_PROVIDERS.includes(input)) {
+          await ctx.reply(
+            `❌ Unknown provider\. Please reply with one of:\n` +
+            `\`CBE\`, \`TELEBIRR\`, \`BOA\`, \`AWASH\``,
+            { parse_mode: 'MarkdownV2' }
+          );
+          return;
+        }
+        wizardState.provider = input;
+        wizardState.step = 'accountNumber';
+        wizardState.expiresAt = Date.now() + WIZARD_TIMEOUT_MS;
+        await ctx.reply(
+          `✅ Provider: *${input}*\n\n` +
+          `Step 2 of 3 — Enter the *account number*:`,
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+
+      // ── Step 2: account number ───────────────────────────────────────────────
+      if (wizardState.step === 'accountNumber') {
+        const accountNum = text.replace(/\s+/g, '');
+        if (!/^[0-9+]{7,20}$/.test(accountNum)) {
+          await ctx.reply(
+            '❌ Account number looks invalid\. Enter digits only \(7–20 characters\):',
+            { parse_mode: 'MarkdownV2' }
+          );
+          return;
+        }
+        wizardState.accountNumber = accountNum;
+        wizardState.step = 'holderName';
+        wizardState.expiresAt = Date.now() + WIZARD_TIMEOUT_MS;
+        await ctx.reply(
+          `✅ Account: \`${escapeMarkdown(accountNum)}\`\n\n` +
+          `Step 3 of 3 — Enter the *account holder name*:`,
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
+
+      // ── Step 3: holder name → save to DB ────────────────────────────────────
+      if (wizardState.step === 'holderName') {
+        const holderName = text.trim();
+        if (holderName.length < 2) {
+          await ctx.reply('❌ Name too short\. Please enter the full account holder name:', { parse_mode: 'MarkdownV2' });
+          return;
+        }
+
+        clearWizard(chatId);
+
+        try {
+          // Resolve org from branch
+          const branch = await prisma.branch.findUnique({
+            where: { id: BOT_BRANCH_ID() },
+            select: { organizationId: true }
+          });
+
+          if (!branch) {
+            await ctx.reply('🆘 Branch not found\. Please verify BOT\_BRANCH\_ID is set correctly\.', { parse_mode: 'MarkdownV2' });
+            return;
+          }
+
+          // Check for duplicates
+          const existing = await prisma.bankSettlementAccount.findFirst({
+            where: {
+              organizationId: branch.organizationId,
+              bankName: wizardState.provider!,
+              accountNumber: wizardState.accountNumber!
+            }
+          });
+
+          if (existing) {
+            await ctx.reply(
+              `⚠️ Account \`${escapeMarkdown(wizardState.accountNumber!)}\` is already registered for *${wizardState.provider}*\.`,
+              { parse_mode: 'MarkdownV2' }
+            );
+            return;
+          }
+
+          await prisma.bankSettlementAccount.create({
+            data: {
+              organizationId: branch.organizationId,
+              bankName: wizardState.provider!,
+              accountNumber: wizardState.accountNumber!,
+              accountHolderName: holderName,
+              isActive: true
+            }
+          });
+
+          // Invalidate accounts cache so verifications see the new account immediately
+          accountsCache.delete(`branch:${BOT_BRANCH_ID()}`);
+
+          logger.info(
+            `[telegram] Account registered: provider=${wizardState.provider} ` +
+            `account=${wizardState.accountNumber} holder="${holderName}" chatId=${chatId}`
+          );
+
+          await ctx.reply(
+            `✅ *Account registered successfully\!*\n\n` +
+            `🏦 Provider: *${wizardState.provider}*\n` +
+            `🔢 Account: \`${escapeMarkdown(wizardState.accountNumber!)}\`\n` +
+            `👤 Holder: ${escapeMarkdown(holderName)}\n\n` +
+            `Receipts sent to this account will now be accepted for verification\.\n` +
+            `Use /accounts to view all registered accounts\.`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        } catch (err: any) {
+          clearWizard(chatId);
+          logger.error(`[telegram] /addaccount DB error: ${err.message}`);
+          await ctx.reply('🆘 Failed to save the account\. Please try again\.', { parse_mode: 'MarkdownV2' });
+        }
+        return;
+      }
+    }
+
+    // ── Normal verification flow ───────────────────────────────────────────────
     await sendTyping(ctx);
 
     const isUrl = /^https?:\/\//i.test(text);
@@ -385,7 +637,7 @@ export function createBot(): Bot {
       );
     } catch { /* non-critical */ }
 
-    logger.info(`[telegram] text verify chatId=${ctx.chat!.id} isUrl=${isUrl} text="${text.slice(0, 80)}"`);
+    logger.info(`[telegram] text verify chatId=${chatId} isUrl=${isUrl} text="${text.slice(0, 80)}"`);
 
     let replyText: string;
     try {
