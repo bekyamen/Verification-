@@ -19,6 +19,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
+// Health check (used by uptime monitors to keep service alive)
+app.get('/api/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+
 // Mount API routes
 app.use('/api', apiRoutes);
 app.use('/api/auth', authRoutes);

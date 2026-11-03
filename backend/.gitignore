@@ -130,6 +130,6 @@ dist
 *.sw?
 
 # Project specific files
-eng.traineddata
+# eng.traineddata is intentionally committed for deployment (Tesseract OCR model)
 test.ts
 qr-test.ts
