@@ -19,7 +19,7 @@
 
 import { Bot, Context } from 'grammy';
 import axios from 'axios';
-import { isAllowed, allowedIdCount } from './auth';
+import { isAllowed, allowedIdCount, isPublicMode, isAdmin } from './auth';
 import { formatVerificationResult, formatStatusLine } from './formatter';
 import { runImageVerification } from '../services/imageVerify.service';
 import { processVerification } from '../services/verification.service';
@@ -91,8 +91,8 @@ export function validateBotConfig(): string[] {
   if (!BOT_TOKEN())      errors.push('TELEGRAM_BOT_TOKEN is not set in .env');
   if (!BOT_BRANCH_ID())  errors.push('BOT_BRANCH_ID is not set in .env');
   if (!BOT_CASHIER_ID()) errors.push('BOT_CASHIER_ID is not set in .env');
-  if (allowedIdCount() === 0) {
-    errors.push('TELEGRAM_ALLOWED_CHAT_IDS is empty — all access will be denied. Add at least one Telegram ID.');
+  if (!isPublicMode() && allowedIdCount() === 0) {
+    errors.push('TELEGRAM_ALLOWED_CHAT_IDS is empty — all access will be denied. Add at least one Telegram ID, or set BOT_PUBLIC_ACCESS=true.');
   }
   return errors;
 }
@@ -649,12 +649,36 @@ export function startBot(): void {
     return;
   }
 
-  const bot = createBot();
+  logger.info('[telegram] Initialising bot...');
+  logger.info(`[telegram] Public mode: ${isPublicMode()}, AllowedIDs: ${allowedIdCount()}`);
+  logger.info(`[telegram] Branch=${BOT_BRANCH_ID()} Cashier=${BOT_CASHIER_ID()}`);
 
-  bot.start({
-    onStart: (info) => {
-      logger.info(`[telegram] Bot @${info.username} started — polling for messages`);
-      logger.info(`[telegram] Branch=${BOT_BRANCH_ID()} Cashier=${BOT_CASHIER_ID()} AllowedIDs=${allowedIdCount()}`);
-    },
-  });
+  // Use an async IIFE so we can await webhook deletion before polling starts.
+  // A leftover webhook (from any previous deployment) causes Telegram to deliver
+  // updates ONLY to the webhook URL and nothing to the long-poll connection —
+  // resulting in a bot that appears alive but silently ignores every message.
+  (async () => {
+    try {
+      const bot = createBot();
+
+      // ── Step 1: clear any existing webhook ─────────────────────────────────
+      logger.info('[telegram] Clearing any existing webhook...');
+      await bot.api.deleteWebhook({ drop_pending_updates: false });
+      logger.info('[telegram] Webhook cleared — starting long-poll...');
+
+      // ── Step 2: start polling ───────────────────────────────────────────────
+      bot.start({
+        onStart: (info) => {
+          logger.info(`[telegram] ✅ Bot @${info.username} is online and polling`);
+          logger.info(`[telegram] Branch=${BOT_BRANCH_ID()} Cashier=${BOT_CASHIER_ID()} AllowedIDs=${allowedIdCount()} PublicMode=${isPublicMode()}`);
+        },
+      });
+
+    } catch (err: any) {
+      logger.error(`[telegram] ❌ Fatal startup error: ${err.message ?? err}`);
+      // Retry after 15 s so a transient network hiccup at boot doesn't kill the bot permanently
+      logger.info('[telegram] Retrying bot startup in 15 s...');
+      setTimeout(() => startBot(), 15_000);
+    }
+  })();
 }

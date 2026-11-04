@@ -40,6 +40,28 @@ app.listen(port, () => {
   warmPdf();
   // Start Telegram bot (long-polling) alongside Express
   startBot();
+
+  // ── Keep-alive ping (prevents Render free-tier spin-down) ────────────────
+  // Render spins down free services after ~15 min of inactivity.
+  // When the service sleeps the Telegram long-poll stops too.
+  // We self-ping /api/health every 10 min to stay awake.
+  const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
+  if (RENDER_URL) {
+    const pingUrl = `${RENDER_URL}/api/health`;
+    setInterval(async () => {
+      try {
+        const http = await import('node:http');
+        const https = await import('node:https');
+        const mod = pingUrl.startsWith('https') ? https : http;
+        mod.get(pingUrl, (res) => {
+          console.log(`[keep-alive] ping → ${res.statusCode}`);
+        }).on('error', (e) => {
+          console.warn(`[keep-alive] ping failed: ${e.message}`);
+        });
+      } catch { /* ignore */ }
+    }, 10 * 60 * 1000); // every 10 minutes
+    console.log(`[keep-alive] Self-ping enabled → ${pingUrl}`);
+  }
 });
 
 
