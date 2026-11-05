@@ -39,6 +39,9 @@ model User {
   passwordHash    String
   pinCode         String?
   role            Role                    @default(CASHIER)
+  telegramId      BigInt?                 @unique
+  loginAttempts   Int                     @default(0)
+  lockedUntil     DateTime?
   createdAt       DateTime                @default(now())
   createdAccounts BankSettlementAccount[] @relation("CreatedAccounts")
   updatedAccounts BankSettlementAccount[] @relation("UpdatedAccounts")

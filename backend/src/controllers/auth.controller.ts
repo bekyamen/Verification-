@@ -5,6 +5,7 @@ import { registerSchema, loginSchema } from '../validators/auth.validator';
 import prisma from '../utils/prisma';
 import { JwtPayload } from '../types';
 import { User } from '@prisma/client';
+import { recordFailedAttempt, resetLoginAttempts } from '../middleware/rateLimit.middleware';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 const COOKIE_OPTIONS = {
@@ -144,15 +145,25 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     });
 
     if (!user) {
+      // Record attempt even for non-existent phones (prevents user enumeration via timing)
+      await recordFailedAttempt(validatedData.phone);
       res.status(401).json({ error: 'Invalid phone or PIN' });
       return;
     }
 
     const isMatch = await bcrypt.compare(validatedData.pinCode, user.passwordHash);
     if (!isMatch) {
+      await recordFailedAttempt(validatedData.phone);
       res.status(401).json({ error: 'Invalid phone or PIN' });
       return;
     }
+
+    // Success — clear lockout state
+    resetLoginAttempts(validatedData.phone);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { loginAttempts: 0, lockedUntil: null },
+    });
 
     const payload: JwtPayload = {
       userId: user.id,
@@ -161,7 +172,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       branchId: user.branchId
     };
 
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 
     res.cookie('token', token, COOKIE_OPTIONS);
     res.status(200).json({

@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { register, login, cashierLogin } from '../controllers/auth.controller';
+import { loginRateLimit } from '../middleware/rateLimit.middleware';
 
 const router = Router();
 
 router.post('/register', register);
-router.post('/login', login);
+router.post('/login', loginRateLimit, login);
 
 /**
  * POST /auth/cashier-token

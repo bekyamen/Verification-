@@ -13,11 +13,12 @@
  *   /start, /help      → Usage instructions
  *   /status            → Check if bot is running and config is valid
  *
- * Authentication: fixed service-account cashier (BOT_CASHIER_ID + BOT_BRANCH_ID in .env).
- * Access control: whitelist via TELEGRAM_ALLOWED_CHAT_IDS in .env.
+ * Authentication: per-user via telegramId lookup; falls back to
+ *   BOT_BRANCH_ID / BOT_CASHIER_ID for admin users.
+ * Access control: open to all (BOT_PUBLIC_ACCESS); whitelist used for admins only.
  */
 
-import { Bot, Context } from 'grammy';
+import { Bot, Context, InlineKeyboard } from 'grammy';
 import axios from 'axios';
 import { isAllowed, allowedIdCount, isPublicMode, isAdmin } from './auth';
 import { formatVerificationResult, formatStatusLine } from './formatter';
@@ -34,11 +35,34 @@ import logger from '../utils/logger';
 const getBotToken      = () => process.env.TELEGRAM_BOT_TOKEN   ?? '';
 const getBotBranchId   = () => process.env.BOT_BRANCH_ID        ?? '';
 const getBotCashierId  = () => process.env.BOT_CASHIER_ID       ?? '';
+const getMiniAppUrl    = () => process.env.MINIAPP_URL           ?? '';
 
 // Convenience aliases used inline in handlers
 const BOT_TOKEN      = () => getBotToken();
 const BOT_BRANCH_ID  = () => getBotBranchId();
 const BOT_CASHIER_ID = () => getBotCashierId();
+
+// Cached bot username (fetched once at startup via getMe())
+let _botUsername: string | null = null;
+async function getBotUsername(bot: Bot): Promise<string> {
+  if (_botUsername) return _botUsername;
+  try {
+    const me = await bot.api.getMe();
+    _botUsername = me.username ?? '';
+    logger.info(`[telegram] Bot username: @${_botUsername}`);
+  } catch {
+    _botUsername = '';
+  }
+  return _botUsername;
+}
+
+/** Return the Mini App URL only if MINIAPP_URL is explicitly configured in .env.
+ *  We no longer derive https://t.me/{username}/app automatically because that URL
+ *  is only valid when the bot has a registered Web App shortname in BotFather;
+ *  using it without one causes BUTTON_URL_INVALID errors. */
+async function getMiniAppOpenUrl(_bot: Bot): Promise<string> {
+  return getMiniAppUrl(); // '' when env var is not set → no button rendered
+}
 
 const SUPPORTED_PROVIDERS = [
   'CBE', 'TELEBIRR', 'DASHEN', 'AWASH', 'BOA',
@@ -46,6 +70,42 @@ const SUPPORTED_PROVIDERS = [
 ] as const;
 
 type Provider = typeof SUPPORTED_PROVIDERS[number];
+
+// ── Per-user context lookup ─────────────────────────────────────────────────
+
+interface UserContext {
+  branchId:   string;
+  cashierId:  string;
+}
+
+/**
+ * Resolve the branchId + cashierId for the Telegram sender.
+ *
+ * Priority:
+ *  1. User has registered in the Mini App and linked their telegramId → use their own IDs
+ *  2. Sender is an admin → fall back to BOT_BRANCH_ID / BOT_CASHIER_ID
+ *  3. Otherwise → return null (prompt them to register)
+ */
+async function resolveUserContext(chatId: number, fromId: number | undefined): Promise<UserContext | null> {
+  if (fromId) {
+    const user = await prisma.user.findFirst({
+      where: { telegramId: BigInt(fromId) },
+      select: { id: true, branchId: true },
+    });
+    if (user && user.branchId) {
+      return { branchId: user.branchId, cashierId: user.id };
+    }
+  }
+
+  // Fallback for admins
+  if (isAdmin(chatId)) {
+    const branchId   = BOT_BRANCH_ID();
+    const cashierId  = BOT_CASHIER_ID();
+    if (branchId && cashierId) return { branchId, cashierId };
+  }
+
+  return null;
+}
 
 // ── Account registration wizard ───────────────────────────────────────────────
 
@@ -89,8 +149,7 @@ function clearWizard(chatId: number): void {
 export function validateBotConfig(): string[] {
   const errors: string[] = [];
   if (!BOT_TOKEN())      errors.push('TELEGRAM_BOT_TOKEN is not set in .env');
-  if (!BOT_BRANCH_ID())  errors.push('BOT_BRANCH_ID is not set in .env');
-  if (!BOT_CASHIER_ID()) errors.push('BOT_CASHIER_ID is not set in .env');
+  // BOT_BRANCH_ID / BOT_CASHIER_ID are still used as admin fallback
   if (!isPublicMode() && allowedIdCount() === 0) {
     errors.push('TELEGRAM_ALLOWED_CHAT_IDS is empty — all access will be denied. Add at least one Telegram ID, or set BOT_PUBLIC_ACCESS=true.');
   }
@@ -166,6 +225,8 @@ async function sendTyping(ctx: Context): Promise<void> {
 // ── Helper: run raw-text / URL verification via processVerification ──────────
 async function verifyText(
   text: string,
+  branchId: string,
+  cashierId: string,
   expectedAmount?: number
 ): Promise<{ status: number; result: any }> {
   const normalized = dissectPayload(text);
@@ -174,8 +235,8 @@ async function verifyText(
   const { amount: rawAmount } = parseRawText(text);
 
   return processVerification({
-    branchId:       BOT_BRANCH_ID(),
-    cashierId:      BOT_CASHIER_ID(),
+    branchId,
+    cashierId,
     provider:       normalized.provider as any,
     txnReference:   normalized.txnReference ?? '',
     amount:         rawAmount ?? normalized.amount ?? undefined,
@@ -187,6 +248,24 @@ async function verifyText(
     printedDate:    normalized.printedDate,
     rawText:        text,
   });
+}
+
+/** Send the "please register" message with a Mini App open button */
+async function sendRegisterPrompt(ctx: Context, bot: Bot): Promise<void> {
+  const miniAppUrl = await getMiniAppOpenUrl(bot);
+  if (miniAppUrl) {
+    const keyboard = new InlineKeyboard().webApp('📲 Open CheckFlow App', miniAppUrl);
+    await ctx.reply(
+      '👋 You\'re not registered yet\\.\n\n' +
+      'Open the app below to register your business, then send receipts for verification\\.',
+      { parse_mode: 'MarkdownV2', reply_markup: keyboard }
+    );
+  } else {
+    await ctx.reply(
+      '👋 You\'re not registered yet\\. Contact your administrator to get set up\\.',
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
 }
 
 // ── Bot creation ─────────────────────────────────────────────────────────────
@@ -213,6 +292,9 @@ export function createBot(): Bot {
 
   // ── /start ─────────────────────────────────────────────────────────────────
   bot.command('start', async (ctx) => {
+    const miniAppUrl = await getMiniAppOpenUrl(bot);
+    const keyboard = miniAppUrl ? new InlineKeyboard().webApp('📲 Open CheckFlow App', miniAppUrl) : undefined;
+
     await ctx.reply(
       `👋 *Welcome to CheckFlow ET Verification Bot\\!*\n\n` +
       `I can verify payment receipts from *CBE*, *Telebirr*, *Dashen*, *Awash*, *BOA*, and more\\.\n\n` +
@@ -226,7 +308,7 @@ export function createBot(): Bot {
       `📋 /accounts — List registered receiving accounts\n` +
       `➕ /addaccount — Register a new CBE / Telebirr / BOA / Awash account\n\n` +
       `Type /help to see all commands\\.`,
-      { parse_mode: 'MarkdownV2' }
+      { parse_mode: 'MarkdownV2', reply_markup: keyboard }
     );
   });
 
@@ -278,8 +360,17 @@ export function createBot(): Bot {
   // ── /accounts — list registered receiving accounts ──────────────────────────
   bot.command('accounts', async (ctx) => {
     try {
+      const fromId = ctx.from?.id;
+      const chatId = ctx.chat!.id;
+      const userCtx = await resolveUserContext(chatId, fromId);
+
+      if (!userCtx) {
+        await sendRegisterPrompt(ctx, bot);
+        return;
+      }
+
       const branch = await prisma.branch.findUnique({
-        where: { id: BOT_BRANCH_ID() },
+        where: { id: userCtx.branchId },
         include: {
           organization: {
             include: {
@@ -328,7 +419,16 @@ export function createBot(): Bot {
 
   // ── /addaccount — start account registration wizard ───────────────────────
   bot.command('addaccount', async (ctx) => {
-    startWizard(ctx.chat!.id);
+    const fromId = ctx.from?.id;
+    const chatId = ctx.chat!.id;
+    const userCtx = await resolveUserContext(chatId, fromId);
+
+    if (!userCtx) {
+      await sendRegisterPrompt(ctx, bot);
+      return;
+    }
+
+    startWizard(chatId);
     await ctx.reply(
       `🏦 *Register a Receiving Account*\n\n` +
       `Which bank/provider?\n\n` +
@@ -378,19 +478,28 @@ export function createBot(): Bot {
       return;
     }
 
+    const fromId  = ctx.from?.id;
+    const chatId  = ctx.chat!.id;
+    const userCtx = await resolveUserContext(chatId, fromId);
+
+    if (!userCtx) {
+      await sendRegisterPrompt(ctx, bot);
+      return;
+    }
+
     await sendTyping(ctx);
-    await ctx.reply('⏳ Verifying manual entry\\.\\.\\.',  { parse_mode: 'MarkdownV2' });
+    await ctx.reply('⏳ Verifying manual entry\\.\\.\\.', { parse_mode: 'MarkdownV2' });
 
     try {
-      logger.info(`[telegram] manual verify chatId=${ctx.chat!.id} provider=${providerArg} ref=${txnRef} amount=${amount ?? 'N/A'}`);
+      logger.info(`[telegram] manual verify chatId=${chatId} provider=${providerArg} ref=${txnRef} amount=${amount ?? 'N/A'}`);
 
       const outcome = await processVerification({
-        branchId:      BOT_BRANCH_ID(),
-        cashierId:     BOT_CASHIER_ID(),
+        branchId:      userCtx.branchId,
+        cashierId:     userCtx.cashierId,
         provider:      providerArg as any,
         txnReference:  txnRef,
         amount:        amount,
-        expectedAmount: amount,     // treat supplied amount as both actual + expected
+        expectedAmount: amount,
         rawText:       'TELEGRAM_MANUAL_ENTRY',
       });
 
@@ -405,18 +514,22 @@ export function createBot(): Bot {
   });
 
   // ── Photo handler: receipt screenshot ─────────────────────────────────────
-  // We send the ack reply BEFORE verification so the update is considered handled.
-  // The final result reply is in its own try/catch so a Telegram ETIMEDOUT never
-  // causes grammy to re-deliver the same photo and re-run CBE.
   bot.on('message:photo', async (ctx) => {
     await sendTyping(ctx);
-    // Acknowledge immediately — update is "handled" from here on
-    try { await ctx.reply('⏳ Verifying receipt photo\.\.\.', { parse_mode: 'MarkdownV2' }); } catch { /* non-critical */ }
+    try { await ctx.reply('⏳ Verifying receipt photo\\.\\.\\.', { parse_mode: 'MarkdownV2' }); } catch { /* non-critical */ }
 
-    // Select the largest available resolution
+    const fromId  = ctx.from?.id;
+    const chatId  = ctx.chat!.id;
+    const userCtx = await resolveUserContext(chatId, fromId);
+
+    if (!userCtx) {
+      await sendRegisterPrompt(ctx, bot);
+      return;
+    }
+
     const photos  = ctx.message.photo;
     const largest = photos[photos.length - 1];
-    logger.info(`[telegram] photo verify chatId=${ctx.chat!.id} fileId=${largest.file_id} size=${largest.file_size ?? '?'}B`);
+    logger.info(`[telegram] photo verify chatId=${chatId} fileId=${largest.file_id} size=${largest.file_size ?? '?'}B`);
 
     let replyText: string;
     try {
@@ -424,8 +537,8 @@ export function createBot(): Bot {
       const outcome = await runImageVerification({
         buffer,
         mimetype:  mime,
-        branchId:  BOT_BRANCH_ID(),
-        cashierId: BOT_CASHIER_ID(),
+        branchId:  userCtx.branchId,
+        cashierId: userCtx.cashierId,
       });
       logger.info(`[telegram] photo result: ${formatStatusLine(outcome.result)}`);
       replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
@@ -434,7 +547,6 @@ export function createBot(): Bot {
       replyText = '🆘 Failed to process this image\\. Please try again or send the receipt as a document \\(PDF / uncompressed image\\)\\.';
     }
 
-    // Isolated send — a failure here must NOT re-trigger verification
     try {
       await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
     } catch (sendErr: any) {
@@ -460,10 +572,18 @@ export function createBot(): Bot {
     }
 
     await sendTyping(ctx);
-    // Acknowledge immediately — update is "handled" from here on
-    try { await ctx.reply(`⏳ Verifying ${isPdf ? 'PDF' : 'image'} document\.\.\.`, { parse_mode: 'MarkdownV2' }); } catch { /* non-critical */ }
+    try { await ctx.reply(`⏳ Verifying ${isPdf ? 'PDF' : 'image'} document\\.\\.\\.`, { parse_mode: 'MarkdownV2' }); } catch { /* non-critical */ }
 
-    logger.info(`[telegram] document verify chatId=${ctx.chat!.id} mime=${mimeType} fileId=${doc.file_id}`);
+    const fromId  = ctx.from?.id;
+    const chatId  = ctx.chat!.id;
+    const userCtx = await resolveUserContext(chatId, fromId);
+
+    if (!userCtx) {
+      await sendRegisterPrompt(ctx, bot);
+      return;
+    }
+
+    logger.info(`[telegram] document verify chatId=${chatId} mime=${mimeType} fileId=${doc.file_id}`);
 
     let replyText: string;
     try {
@@ -471,8 +591,8 @@ export function createBot(): Bot {
       const outcome = await runImageVerification({
         buffer,
         mimetype:  isPdf ? 'application/pdf' : mime,
-        branchId:  BOT_BRANCH_ID(),
-        cashierId: BOT_CASHIER_ID(),
+        branchId:  userCtx.branchId,
+        cashierId: userCtx.cashierId,
       });
       logger.info(`[telegram] document result: ${formatStatusLine(outcome.result)}`);
       replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
@@ -481,7 +601,6 @@ export function createBot(): Bot {
       replyText = '🆘 Failed to process this document\\. Please try again\\.';
     }
 
-    // Isolated send — a failure here must NOT re-trigger verification
     try {
       await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
     } catch (sendErr: any) {
@@ -491,7 +610,7 @@ export function createBot(): Bot {
 
   // ── Text handler: URL, raw transaction reference, or wizard input ───────────
   bot.on('message:text', async (ctx) => {
-    const text = ctx.message.text.trim();
+    const text   = ctx.message.text.trim();
     const chatId = ctx.chat!.id;
 
     // Ignore messages that look like commands (handled above)
@@ -500,6 +619,9 @@ export function createBot(): Bot {
     // ── Wizard intercept ───────────────────────────────────────────────────────
     const session = getWizard(chatId);
     if (session) {
+      const fromId  = ctx.from?.id;
+      const userCtx = await resolveUserContext(chatId, fromId);
+
       if (session.step === 'provider') {
         const input = text.toUpperCase() as BankProvider;
         if (!ACCOUNT_PROVIDERS.includes(input)) {
@@ -539,15 +661,20 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
         const { provider, accountNumber } = session;
         clearWizard(chatId);
 
+        if (!userCtx) {
+          await sendRegisterPrompt(ctx, bot);
+          return;
+        }
+
         try {
           // Resolve org from branch
           const branch = await prisma.branch.findUnique({
-            where: { id: BOT_BRANCH_ID() },
+            where: { id: userCtx.branchId },
             select: { organizationId: true }
           });
 
           if (!branch) {
-            await ctx.reply('🆘 Could not resolve branch\\. Check BOT\_BRANCH\_ID config\\.', { parse_mode: 'MarkdownV2' });
+            await ctx.reply('🆘 Could not resolve branch\\. Check configuration\\.', { parse_mode: 'MarkdownV2' });
             return;
           }
 
@@ -578,8 +705,8 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
             }
           });
 
-          // Invalidate cache so next verification picks up the new account
-          accountsCache.delete(`branch:${BOT_BRANCH_ID()}`);
+          // Invalidate cache
+          accountsCache.delete(`branch:${userCtx.branchId}`);
 
           logger.info(`[telegram] registered account provider=${provider} account=${accountNumber} org=${branch.organizationId}`);
 
@@ -601,13 +728,20 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
     }
 
     // ── Normal verification path ───────────────────────────────────────────────
+    const fromId  = ctx.from?.id;
+    const userCtx = await resolveUserContext(chatId, fromId);
+
+    if (!userCtx) {
+      await sendRegisterPrompt(ctx, bot);
+      return;
+    }
+
     await sendTyping(ctx);
 
     const isUrl = /^https?:\/\//i.test(text);
-    // Acknowledge immediately — update is "handled" from here on
     try {
       await ctx.reply(
-        `⏳ Verifying ${isUrl ? 'URL' : 'text reference'}\.\.\.`,
+        `⏳ Verifying ${isUrl ? 'URL' : 'text reference'}\\.\\.\\.`,
         { parse_mode: 'MarkdownV2' }
       );
     } catch { /* non-critical */ }
@@ -616,7 +750,7 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
 
     let replyText: string;
     try {
-      const outcome = await verifyText(text);
+      const outcome = await verifyText(text, userCtx.branchId, userCtx.cashierId);
       logger.info(`[telegram] text result: ${formatStatusLine(outcome.result)}`);
       replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
     } catch (err: any) {
@@ -624,7 +758,6 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
       replyText = '🆘 Failed to process this text\\. Please check the reference and try again\\.';
     }
 
-    // Isolated send — a failure here must NOT re-trigger verification
     try {
       await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
     } catch (sendErr: any) {
@@ -651,12 +784,8 @@ export function startBot(): void {
 
   logger.info('[telegram] Initialising bot...');
   logger.info(`[telegram] Public mode: ${isPublicMode()}, AllowedIDs: ${allowedIdCount()}`);
-  logger.info(`[telegram] Branch=${BOT_BRANCH_ID()} Cashier=${BOT_CASHIER_ID()}`);
+  logger.info(`[telegram] Admin fallback Branch=${BOT_BRANCH_ID()} Cashier=${BOT_CASHIER_ID()}`);
 
-  // Use an async IIFE so we can await webhook deletion before polling starts.
-  // A leftover webhook (from any previous deployment) causes Telegram to deliver
-  // updates ONLY to the webhook URL and nothing to the long-poll connection —
-  // resulting in a bot that appears alive but silently ignores every message.
   (async () => {
     try {
       const bot = createBot();
@@ -666,17 +795,19 @@ export function startBot(): void {
       await bot.api.deleteWebhook({ drop_pending_updates: false });
       logger.info('[telegram] Webhook cleared — starting long-poll...');
 
+      // Fetch bot username early so it's cached before any message arrives
+      await getBotUsername(bot);
+
       // ── Step 2: start polling ───────────────────────────────────────────────
       bot.start({
         onStart: (info) => {
           logger.info(`[telegram] ✅ Bot @${info.username} is online and polling`);
-          logger.info(`[telegram] Branch=${BOT_BRANCH_ID()} Cashier=${BOT_CASHIER_ID()} AllowedIDs=${allowedIdCount()} PublicMode=${isPublicMode()}`);
+          logger.info(`[telegram] Admin fallback Branch=${BOT_BRANCH_ID()} Cashier=${BOT_CASHIER_ID()} AllowedIDs=${allowedIdCount()} PublicMode=${isPublicMode()}`);
         },
       });
 
     } catch (err: any) {
       logger.error(`[telegram] ❌ Fatal startup error: ${err.message ?? err}`);
-      // Retry after 15 s so a transient network hiccup at boot doesn't kill the bot permanently
       logger.info('[telegram] Retrying bot startup in 15 s...');
       setTimeout(() => startBot(), 15_000);
     }

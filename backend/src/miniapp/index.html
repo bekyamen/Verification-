@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta name="description" content="CheckFlow ET — Manage your payment verification accounts inside Telegram" />
+  <title>CheckFlow ET</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    /* ── Design tokens from Telegram theme ──────────────────────────────── */
+    :root {
+      --bg:        var(--tg-theme-bg-color,        #ffffff);
+      --bg2:       var(--tg-theme-secondary-bg-color, #f4f4f4);
+      --text:      var(--tg-theme-text-color,       #000000);
+      --hint:      var(--tg-theme-hint-color,        #888888);
+      --link:      var(--tg-theme-link-color,        #2481cc);
+      --button:    var(--tg-theme-button-color,      #2481cc);
+      --btn-text:  var(--tg-theme-button-text-color, #ffffff);
+      --accent:    var(--tg-theme-accent-text-color, #2481cc);
+      --destructive: var(--tg-theme-destructive-text-color, #e53935);
+      --radius: 14px;
+      --radius-sm: 8px;
+      --transition: 0.18s cubic-bezier(.4,0,.2,1);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overscroll-behavior: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────────────── */
+    .screen {
+      display: none;
+      flex-direction: column;
+      min-height: 100vh;
+      padding: 0 0 90px;
+      animation: fadeIn .2s ease;
+    }
+    .screen.active { display: flex; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      padding: 18px 16px 14px;
+      gap: 10px;
+    }
+    .header-logo {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--button), color-mix(in srgb, var(--button) 60%, #000));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; flex-shrink: 0;
+    }
+    .header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+    .header p  { font-size: 13px; color: var(--hint); }
+
+    /* ── Section card ───────────────────────────────────────────────────── */
+    .card {
+      background: var(--bg2);
+      border-radius: var(--radius);
+      margin: 0 12px 12px;
+      overflow: hidden;
+    }
+    .card-row {
+      display: flex;
+      align-items: center;
+      padding: 14px 16px;
+      gap: 12px;
+      border-bottom: 1px solid color-mix(in srgb, var(--hint) 20%, transparent);
+      transition: background var(--transition);
+      cursor: pointer;
+    }
+    .card-row:last-child { border-bottom: none; }
+    .card-row:active { background: color-mix(in srgb, var(--hint) 15%, transparent); }
+    .card-row.no-tap { cursor: default; }
+    .card-row.no-tap:active { background: transparent; }
+
+    .row-icon {
+      width: 36px; height: 36px; border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; flex-shrink: 0;
+    }
+    .row-icon.blue  { background: color-mix(in srgb, var(--button) 18%, transparent); }
+    .row-icon.green { background: color-mix(in srgb, #43a047 18%, transparent); }
+    .row-icon.red   { background: color-mix(in srgb, var(--destructive) 18%, transparent); }
+    .row-icon.orange{ background: color-mix(in srgb, #fb8c00 18%, transparent); }
+
+    .row-body { flex: 1; min-width: 0; }
+    .row-body strong { display: block; font-size: 15px; font-weight: 600; }
+    .row-body span   { display: block; font-size: 13px; color: var(--hint); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row-badge {
+      font-size: 12px; font-weight: 600;
+      padding: 2px 8px; border-radius: 20px;
+      flex-shrink: 0;
+    }
+    .row-badge.active   { background: color-mix(in srgb,#43a047 18%,transparent); color:#43a047; }
+    .row-badge.inactive { background: color-mix(in srgb,var(--hint) 18%,transparent); color:var(--hint); }
+
+    .row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .icon-btn {
+      width: 32px; height: 32px; border-radius: 8px; border: none;
+      background: color-mix(in srgb, var(--hint) 15%, transparent);
+      color: var(--text); font-size: 16px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background var(--transition);
+    }
+    .icon-btn:active { background: color-mix(in srgb, var(--hint) 30%, transparent); }
+    .icon-btn.danger { color: var(--destructive); }
+
+    /* ── Forms ──────────────────────────────────────────────────────────── */
+    .form-section { padding: 20px 16px 0; }
+    .form-section label {
+      display: block; font-size: 12px; font-weight: 600;
+      color: var(--hint); text-transform: uppercase; letter-spacing: .5px;
+      margin-bottom: 6px;
+    }
+    .form-section label span.req { color: var(--destructive); }
+
+    input, select {
+      width: 100%; padding: 14px 14px;
+      background: var(--bg2); border: 1.5px solid transparent;
+      border-radius: var(--radius-sm); color: var(--text);
+      font-size: 15px; font-family: inherit; outline: none;
+      transition: border-color var(--transition);
+      -webkit-appearance: none;
+    }
+    input:focus, select:focus { border-color: var(--button); }
+    input.error { border-color: var(--destructive); }
+    input[type=number] { -moz-appearance: textfield; }
+    input[type=number]::-webkit-outer-spin-button,
+    input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+
+    .field-error { font-size: 12px; color: var(--destructive); margin-top: 4px; display: none; }
+    .field-error.visible { display: block; }
+
+    .form-hint { font-size: 13px; color: var(--hint); margin-top: 6px; }
+
+    /* ── PIN dots ────────────────────────────────────────────────────────── */
+    .pin-wrap { display: flex; gap: 14px; justify-content: center; padding: 8px 0; }
+    .pin-dot {
+      width: 18px; height: 18px; border-radius: 50%;
+      border: 2px solid var(--hint);
+      transition: background var(--transition), border-color var(--transition);
+    }
+    .pin-dot.filled { background: var(--button); border-color: var(--button); }
+    .pin-input-hidden {
+      position: absolute; opacity: 0; pointer-events: none; width: 0; height: 0;
+    }
+    .pin-tap-area {
+      padding: 10px 0 6px;
+      cursor: text;
+      border-radius: var(--radius-sm);
+      background: var(--bg2); border: 1.5px solid transparent;
+      transition: border-color var(--transition);
+      display: flex; flex-direction: column; align-items: center; gap: 10px;
+    }
+    .pin-tap-area.focused { border-color: var(--button); }
+    .pin-label { font-size: 13px; color: var(--hint); }
+
+    /* ── Buttons ─────────────────────────────────────────────────────────── */
+    .btn {
+      width: 100%; padding: 15px; border: none; border-radius: var(--radius-sm);
+      font-size: 16px; font-weight: 600; cursor: pointer;
+      background: var(--button); color: var(--btn-text);
+      transition: opacity var(--transition), transform 50ms;
+      font-family: inherit;
+    }
+    .btn:active { transform: scale(.98); }
+    .btn:disabled { opacity: .45; pointer-events: none; }
+    .btn.ghost {
+      background: color-mix(in srgb, var(--button) 12%, transparent);
+      color: var(--button);
+    }
+    .btn.danger {
+      background: color-mix(in srgb, var(--destructive) 12%, transparent);
+      color: var(--destructive);
+    }
+    .btn-row { display: flex; gap: 10px; }
+    .btn-row .btn { flex: 1; }
+
+    /* ── Auth screens ────────────────────────────────────────────────────── */
+    .auth-wrap {
+      flex: 1; display: flex; flex-direction: column;
+      padding: 28px 20px 0;
+    }
+    .auth-logo {
+      width: 72px; height: 72px; border-radius: 20px;
+      background: linear-gradient(135deg, var(--button), color-mix(in srgb, var(--button) 55%, #000));
+      font-size: 36px; display: flex; align-items: center; justify-content: center;
+      margin-bottom: 20px; box-shadow: 0 8px 24px color-mix(in srgb, var(--button) 30%, transparent);
+    }
+    .auth-title { font-size: 26px; font-weight: 700; letter-spacing: -.4px; margin-bottom: 6px; }
+    .auth-sub   { font-size: 14px; color: var(--hint); margin-bottom: 28px; line-height: 1.5; }
+    .form-gap   { height: 16px; }
+    .auth-link  { text-align: center; padding: 20px 0; font-size: 14px; color: var(--hint); }
+    .auth-link a { color: var(--link); text-decoration: none; font-weight: 500; }
+
+    /* ── Empty state ─────────────────────────────────────────────────────── */
+    .empty-state {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; padding: 40px 24px;
+      text-align: center; gap: 12px;
+    }
+    .empty-icon { font-size: 56px; }
+    .empty-title { font-size: 18px; font-weight: 700; }
+    .empty-desc  { font-size: 14px; color: var(--hint); line-height: 1.5; }
+
+    /* ── Spinner ─────────────────────────────────────────────────────────── */
+    .spinner {
+      width: 36px; height: 36px; border-radius: 50%;
+      border: 3px solid color-mix(in srgb, var(--button) 25%, transparent);
+      border-top-color: var(--button);
+      animation: spin .7s linear infinite;
+    }
+    .loading-screen {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px; min-height: 100vh;
+    }
+    .loading-text { font-size: 14px; color: var(--hint); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Toast ───────────────────────────────────────────────────────────── */
+    #toast {
+      position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%) translateY(20px);
+      background: color-mix(in srgb, var(--text) 88%, transparent);
+      color: var(--bg); padding: 10px 20px; border-radius: 24px;
+      font-size: 14px; font-weight: 500; opacity: 0;
+      transition: opacity .2s, transform .2s; pointer-events: none; z-index: 999;
+      max-width: 80vw; text-align: center;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* ── Bottom nav ──────────────────────────────────────────────────────── */
+    .bottom-nav {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      display: none; /* shown after login */
+      background: var(--bg2);
+      border-top: 1px solid color-mix(in srgb, var(--hint) 20%, transparent);
+      padding: 8px 0 max(env(safe-area-inset-bottom), 8px);
+      z-index: 100;
+    }
+    .bottom-nav.visible { display: flex; }
+    .nav-item {
+      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+      padding: 4px 0;
+      font-size: 11px; color: var(--hint); font-weight: 500;
+      cursor: pointer; transition: color var(--transition);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .nav-item .nav-icon { font-size: 22px; transition: transform .15s; }
+    .nav-item.active { color: var(--button); }
+    .nav-item.active .nav-icon { transform: scale(1.1); }
+
+    /* ── Profile ─────────────────────────────────────────────────────────── */
+    .profile-avatar {
+      width: 80px; height: 80px; border-radius: 24px;
+      background: linear-gradient(135deg, var(--button), color-mix(in srgb, var(--button) 55%, #000));
+      font-size: 36px; display: flex; align-items: center; justify-content: center;
+      margin: 24px auto 16px; box-shadow: 0 8px 20px color-mix(in srgb, var(--button) 25%, transparent);
+    }
+    .profile-name { text-align: center; font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+    .profile-sub  { text-align: center; font-size: 13px; color: var(--hint); margin-bottom: 24px; }
+
+    /* ── Section label ───────────────────────────────────────────────────── */
+    .section-label {
+      padding: 14px 16px 6px;
+      font-size: 12px; font-weight: 600;
+      color: var(--hint); text-transform: uppercase; letter-spacing: .5px;
+    }
+
+    /* ── Add account form floating ───────────────────────────────────────── */
+    .add-form-wrap {
+      background: var(--bg2); border-radius: var(--radius) var(--radius) 0 0;
+      padding: 16px 16px 0; margin-top: 16px;
+    }
+    .add-form-title {
+      font-size: 16px; font-weight: 700; margin-bottom: 14px;
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    /* ── Delete confirm overlay ──────────────────────────────────────────── */
+    #confirm-overlay {
+      display: none; position: fixed; inset: 0;
+      background: color-mix(in srgb, #000 55%, transparent);
+      z-index: 200; align-items: flex-end; justify-content: center;
+    }
+    #confirm-overlay.show { display: flex; }
+    .confirm-sheet {
+      background: var(--bg); border-radius: var(--radius) var(--radius) 0 0;
+      width: 100%; max-width: 520px; padding: 20px 20px max(env(safe-area-inset-bottom), 20px);
+      animation: slideUp .22s ease;
+    }
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: none; } }
+    .confirm-sheet h2 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+    .confirm-sheet p  { font-size: 14px; color: var(--hint); margin-bottom: 20px; }
+
+    /* ── Edit overlay ────────────────────────────────────────────────────── */
+    #edit-overlay {
+      display: none; position: fixed; inset: 0;
+      background: color-mix(in srgb, #000 55%, transparent);
+      z-index: 200; align-items: flex-end; justify-content: center;
+    }
+    #edit-overlay.show { display: flex; }
+    .edit-sheet {
+      background: var(--bg); border-radius: var(--radius) var(--radius) 0 0;
+      width: 100%; max-width: 520px; padding: 20px 20px max(env(safe-area-inset-bottom), 20px);
+      animation: slideUp .22s ease;
+    }
+    .edit-sheet h2 { font-size: 18px; font-weight: 700; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+
+<!-- ── Loading screen ──────────────────────────────────────────────── -->
+<div id="screen-loading" class="screen active">
+  <div class="loading-screen">
+    <div class="spinner"></div>
+    <div class="loading-text">Loading CheckFlow…</div>
+  </div>
+</div>
+
+<!-- ── Register screen ────────────────────────────────────────────── -->
+<div id="screen-register" class="screen">
+  <div class="auth-wrap">
+    <div class="auth-logo">✅</div>
+    <div class="auth-title">Create Account</div>
+    <div class="auth-sub">Register your business to start verifying payments.</div>
+
+    <label>Full Name <span class="req">*</span></label>
+    <input id="reg-name" type="text" autocomplete="name" placeholder="Abebe Girma" />
+    <div id="reg-name-err" class="field-error"></div>
+    <div class="form-gap"></div>
+
+    <label>Phone Number <span class="req">*</span></label>
+    <div style="display:flex;gap:8px">
+      <input id="reg-phone" type="tel" placeholder="0912345678" style="flex:1" autocomplete="tel" />
+      <button class="btn ghost" style="width:auto;padding:14px 12px;font-size:20px" id="share-phone-btn" title="Use my Telegram phone">📱</button>
+    </div>
+    <div id="reg-phone-err" class="field-error"></div>
+    <div class="form-hint">Tap 📱 to share your Telegram number.</div>
+    <div class="form-gap"></div>
+
+    <label>4-Digit PIN <span class="req">*</span></label>
+    <div class="pin-tap-area" id="reg-pin-area" tabindex="0">
+      <div class="pin-label">Tap to enter PIN</div>
+      <div class="pin-wrap" id="reg-pin-dots"></div>
+    </div>
+    <input id="reg-pin-input" class="pin-input-hidden" type="number" inputmode="numeric" maxlength="4" />
+    <div id="reg-pin-err" class="field-error"></div>
+    <div class="form-gap"></div>
+
+    <label>Confirm PIN <span class="req">*</span></label>
+    <div class="pin-tap-area" id="reg-pin2-area" tabindex="0">
+      <div class="pin-label">Tap to confirm PIN</div>
+      <div class="pin-wrap" id="reg-pin2-dots"></div>
+    </div>
+    <input id="reg-pin2-input" class="pin-input-hidden" type="number" inputmode="numeric" maxlength="4" />
+    <div id="reg-pin2-err" class="field-error"></div>
+    <div class="form-gap"></div>
+
+    <button class="btn" id="reg-submit-btn" onclick="submitRegister()">Create Account</button>
+    <div class="auth-link">Already have an account? <a href="#" onclick="showScreen('login');return false">Log in</a></div>
+  </div>
+</div>
+
+<!-- ── Login screen ───────────────────────────────────────────────── -->
+<div id="screen-login" class="screen">
+  <div class="auth-wrap">
+    <div class="auth-logo">🔐</div>
+    <div class="auth-title">Welcome Back</div>
+    <div class="auth-sub">Log in to manage your accounts.</div>
+
+    <label>Phone Number <span class="req">*</span></label>
+    <input id="login-phone" type="tel" placeholder="0912345678" autocomplete="tel" />
+    <div id="login-phone-err" class="field-error"></div>
+    <div class="form-gap"></div>
+
+    <label>4-Digit PIN <span class="req">*</span></label>
+    <div class="pin-tap-area" id="login-pin-area" tabindex="0">
+      <div class="pin-label">Tap to enter PIN</div>
+      <div class="pin-wrap" id="login-pin-dots"></div>
+    </div>
+    <input id="login-pin-input" class="pin-input-hidden" type="number" inputmode="numeric" maxlength="4" />
+    <div id="login-pin-err" class="field-error"></div>
+    <div class="form-gap"></div>
+
+    <button class="btn" id="login-submit-btn" onclick="submitLogin()">Log In</button>
+    <div class="auth-link">No account? <a href="#" onclick="showScreen('register');return false">Create one</a></div>
+  </div>
+</div>
+
+<!-- ── Accounts screen ─────────────────────────────────────────────── -->
+<div id="screen-accounts" class="screen">
+  <div class="header">
+    <div class="header-logo">🏦</div>
+    <div>
+      <h1>Accounts</h1>
+      <p>Receiving bank accounts</p>
+    </div>
+  </div>
+
+  <div id="accounts-list"></div>
+
+  <!-- Add account form -->
+  <div class="add-form-wrap">
+    <div class="add-form-title">➕ Add Account</div>
+
+    <label>Provider</label>
+    <select id="add-bank">
+      <option value="CBE">CBE (Commercial Bank of Ethiopia)</option>
+      <option value="TELEBIRR">Telebirr</option>
+      <option value="BOA">BOA (Bank of Abyssinia)</option>
+      <option value="AWASH">Awash Bank</option>
+    </select>
+    <div class="form-gap" style="height:10px"></div>
+
+    <label>Account Number <span class="req">*</span></label>
+    <input id="add-number" type="text" inputmode="numeric" placeholder="Account / phone number" />
+    <div id="add-number-err" class="field-error"></div>
+    <div class="form-gap" style="height:10px"></div>
+
+    <label>Account Holder Name <span class="req">*</span></label>
+    <input id="add-holder" type="text" placeholder="Name on account" />
+    <div id="add-holder-err" class="field-error"></div>
+    <div class="form-gap" style="height:10px"></div>
+
+    <button class="btn" onclick="submitAddAccount()">Add Account</button>
+    <div class="form-gap"></div>
+  </div>
+</div>
+
+<!-- ── Profile screen ──────────────────────────────────────────────── -->
+<div id="screen-profile" class="screen">
+  <div class="profile-avatar">👤</div>
+  <div id="profile-name" class="profile-name">—</div>
+  <div id="profile-sub"  class="profile-sub">—</div>
+
+  <div class="section-label">Account Info</div>
+  <div class="card">
+    <div class="card-row no-tap">
+      <div class="row-icon blue">📞</div>
+      <div class="row-body"><strong>Phone</strong><span id="pf-phone">—</span></div>
+    </div>
+    <div class="card-row no-tap">
+      <div class="row-icon blue">🏢</div>
+      <div class="row-body"><strong>Organization</strong><span id="pf-org">—</span></div>
+    </div>
+    <div class="card-row no-tap">
+      <div class="row-icon blue">👔</div>
+      <div class="row-body"><strong>Role</strong><span id="pf-role">—</span></div>
+    </div>
+    <div class="card-row no-tap">
+      <div class="row-icon green">🏦</div>
+      <div class="row-body"><strong>Accounts</strong><span id="pf-accounts">—</span></div>
+    </div>
+    <div class="card-row no-tap">
+      <div class="row-icon green" id="pf-tg-icon">📱</div>
+      <div class="row-body"><strong>Telegram Link</strong><span id="pf-tg">—</span></div>
+    </div>
+  </div>
+
+  <div style="padding:0 12px">
+    <button class="btn danger" onclick="logout()">Log Out</button>
+  </div>
+</div>
+
+<!-- ── Bottom Nav ──────────────────────────────────────────────────── -->
+<nav class="bottom-nav" id="bottom-nav">
+  <div class="nav-item active" id="nav-accounts" onclick="navTo('accounts')">
+    <span class="nav-icon">🏦</span>Accounts
+  </div>
+  <div class="nav-item" id="nav-profile" onclick="navTo('profile')">
+    <span class="nav-icon">👤</span>Profile
+  </div>
+</nav>
+
+<!-- ── Delete confirm sheet ────────────────────────────────────────── -->
+<div id="confirm-overlay" onclick="closeConfirm(event)">
+  <div class="confirm-sheet">
+    <h2>Delete Account?</h2>
+    <p id="confirm-desc">This action cannot be undone.</p>
+    <div class="btn-row">
+      <button class="btn ghost" onclick="closeConfirm()">Cancel</button>
+      <button class="btn danger" id="confirm-ok-btn">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Edit holder name sheet ──────────────────────────────────────── -->
+<div id="edit-overlay" onclick="closeEdit(event)">
+  <div class="edit-sheet">
+    <h2>Edit Holder Name</h2>
+    <input id="edit-holder-input" type="text" placeholder="Account holder name" />
+    <div class="form-gap"></div>
+    <div class="btn-row">
+      <button class="btn ghost" onclick="closeEdit()">Cancel</button>
+      <button class="btn" id="edit-ok-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

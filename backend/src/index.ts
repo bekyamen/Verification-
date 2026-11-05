@@ -4,8 +4,10 @@ dotenv.config();   // ← must run BEFORE any module that reads process.env at l
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import path from 'path';
 import apiRoutes from './routes/api.routes';
 import authRoutes from './routes/auth.routes';
+import miniappRoutes from './routes/miniapp.routes';
 import { warmOcrWorkers, warmOcr } from './services/receiptParser.service';
 import { warmPdf } from './services/verifyCBE';
 import { startBot } from './telegram/bot';
@@ -25,6 +27,19 @@ app.get('/api/health', (_req, res) => res.json({ status: 'ok', uptime: process.u
 // Mount API routes
 app.use('/api', apiRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/miniapp', miniappRoutes);
+
+// Serve Mini App static files
+// In production (compiled): __dirname is dist/  so miniapp is at dist/miniapp
+// In dev (tsx):             __dirname is src/    so miniapp is at src/miniapp
+
+const miniappDir = path.join(__dirname, 'miniapp');
+app.use('/miniapp', express.static(miniappDir));
+
+// SPA fallback: serve index.html for any other /miniapp route
+app.use('/miniapp', (_req, res) => {
+  res.sendFile(path.join(miniappDir, 'index.html'));
+});
 
 // Unhandled error management
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
