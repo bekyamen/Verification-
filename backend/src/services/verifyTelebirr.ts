@@ -19,10 +19,6 @@
 import axios, { AxiosError } from 'axios';
 import * as cheerio from 'cheerio';
 import https from 'https';
-// CommonJS-compatible import for https-proxy-agent (package uses modern 'exports' field
-// which the project's commonjs moduleResolution cannot resolve via import statement).
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { HttpsProxyAgent } = require('https-proxy-agent');
 
 import logger from '../utils/logger';
 import { telebirrCache } from '../utils/verifyCache';
@@ -36,6 +32,8 @@ const PROXY_URL = process.env.TELEBIRR_PROXY_URL?.trim() || null;
 
 function buildAgent(): https.Agent {
   if (PROXY_URL) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { HttpsProxyAgent } = require('https-proxy-agent');
     // Mask credentials in the log
     const maskedProxy = PROXY_URL.replace(/:([^@/]+)@/, ':***@');
     logger.info(`[Telebirr] Using proxy: ${maskedProxy}`);

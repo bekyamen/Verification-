@@ -24,7 +24,7 @@ const MAX_AGE_SECS = 24 * 60 * 60; // 24 hours
 
 // ── Telegram initData validation ─────────────────────────────────────────────
 
-interface TelegramUser {
+export interface TelegramUser {
   id:         number;
   first_name: string;
   last_name?: string;
@@ -32,7 +32,7 @@ interface TelegramUser {
   phone?:     string;
 }
 
-interface ParsedInitData {
+export interface ParsedInitData {
   hash:         string;
   auth_date:    number;
   user?:        TelegramUser;
@@ -40,7 +40,7 @@ interface ParsedInitData {
   chat_instance?: string;
 }
 
-function verifyInitData(initDataRaw: string): ParsedInitData {
+export function verifyInitData(initDataRaw: string): ParsedInitData {
   const params = new URLSearchParams(initDataRaw);
   const hash   = params.get('hash') ?? '';
   params.delete('hash');
@@ -200,10 +200,12 @@ export const miniappLink = async (req: AuthenticatedRequest, res: Response): Pro
     // Check the telegramId isn't already linked to a DIFFERENT user
     const conflict = await prisma.user.findUnique({
       where: { telegramId },
-      select: { id: true },
+      select: { id: true, fullName: true },
     });
     if (conflict && conflict.id !== userId) {
-      res.status(409).json({ error: 'This Telegram account is already linked to another user' });
+      res.status(409).json({
+        error: `This Telegram account is already linked to ${conflict.fullName}. Each Telegram account can only be linked to one user.`,
+      });
       return;
     }
 
@@ -235,6 +237,7 @@ export const miniappMe = async (req: AuthenticatedRequest, res: Response): Promi
         id: true, fullName: true, phone: true, role: true,
         branchId: true, organizationId: true, telegramId: true,
         organization: { select: { name: true } },
+        branch: { select: { id: true, name: true } },
         _count: { select: { createdAccounts: true } },
       },
     });
@@ -245,17 +248,22 @@ export const miniappMe = async (req: AuthenticatedRequest, res: Response): Promi
       where: { organizationId: user.organizationId },
     });
 
+    const isAdmin = user.role === 'OWNER' || user.role === 'MANAGER';
+    const cleanPhone = user.phone.startsWith('CASHIER-') ? null : user.phone;
+
     res.status(200).json({
       user: {
         id:               user.id,
         fullName:         user.fullName,
-        phone:            user.phone,
+        phone:            cleanPhone,
         role:             user.role,
+        isAdmin,
         branchId:         user.branchId,
         organizationId:   user.organizationId,
         organizationName: user.organization.name,
         telegramLinked:   user.telegramId !== null,
-        accountCount,
+        accountCount:     isAdmin ? accountCount : undefined,
+        branch:           user.branch ?? null,
       },
     });
   } catch (err: any) {

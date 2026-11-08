@@ -1,8 +1,13 @@
 /**
  * bot.ts — CheckFlow ET Telegram Bot
  *
- * Integrates the existing receipt verification backend with Telegram so that
- * operators can verify payment receipts directly from the Telegram app.
+ * Integrates receipt verification directly into Telegram for all business owners & cashiers.
+ *
+ * Multi-Tenant Architecture:
+ *   - Zero fixed branch or cashier IDs in .env.
+ *   - Each Telegram user is dynamically matched to their own business and branch.
+ *   - Verified receipts are matched against the receiving accounts of that user's business.
+ *   - Unregistered users are greeted with a friendly message and a button to open the Mini App.
  *
  * Supported inputs:
  *   📸 Photo           → OCR + QR decode → bank verification
@@ -10,17 +15,15 @@
  *   🔗 Text URL        → CBE / Telebirr receipt URL → bank verification
  *   ✉️  Text reference  → Raw text / FT reference → bank verification
  *   /manual            → Manual provider + reference + optional amount entry
+ *   /accounts          → (Admin only) List registered receiving accounts
+ *   /addaccount        → (Admin only) Add a receiving account via wizard
  *   /start, /help      → Usage instructions
- *   /status            → Check if bot is running and config is valid
- *
- * Authentication: per-user via telegramId lookup; falls back to
- *   BOT_BRANCH_ID / BOT_CASHIER_ID for admin users.
- * Access control: open to all (BOT_PUBLIC_ACCESS); whitelist used for admins only.
+ *   /status            → Dynamic bot status & statistics
  */
 
 import { Bot, Context, InlineKeyboard } from 'grammy';
 import axios from 'axios';
-import { isAllowed, allowedIdCount, isPublicMode, isAdmin } from './auth';
+import { getRegisteredUser, TelegramUserContext } from './auth';
 import { formatVerificationResult, formatStatusLine } from './formatter';
 import { runImageVerification } from '../services/imageVerify.service';
 import { processVerification } from '../services/verification.service';
@@ -30,19 +33,14 @@ import { accountsCache } from '../utils/verifyCache';
 import prisma from '../utils/prisma';
 import logger from '../utils/logger';
 
-// ── Configuration (read lazily so dotenv has time to run) ────────────────────
+// ── Configuration ────────────────────────────────────────────────────────────
 
-const getBotToken      = () => process.env.TELEGRAM_BOT_TOKEN   ?? '';
-const getBotBranchId   = () => process.env.BOT_BRANCH_ID        ?? '';
-const getBotCashierId  = () => process.env.BOT_CASHIER_ID       ?? '';
-const getMiniAppUrl    = () => process.env.MINIAPP_URL           ?? '';
+const getBotToken   = () => process.env.TELEGRAM_BOT_TOKEN ?? '';
+const getMiniAppUrl = () => process.env.MINIAPP_URL        ?? '';
 
-// Convenience aliases used inline in handlers
-const BOT_TOKEN      = () => getBotToken();
-const BOT_BRANCH_ID  = () => getBotBranchId();
-const BOT_CASHIER_ID = () => getBotCashierId();
+const BOT_TOKEN = () => getBotToken();
 
-// Cached bot username (fetched once at startup via getMe())
+// Cached bot username
 let _botUsername: string | null = null;
 async function getBotUsername(bot: Bot): Promise<string> {
   if (_botUsername) return _botUsername;
@@ -56,12 +54,15 @@ async function getBotUsername(bot: Bot): Promise<string> {
   return _botUsername;
 }
 
-/** Return the Mini App URL only if MINIAPP_URL is explicitly configured in .env.
- *  We no longer derive https://t.me/{username}/app automatically because that URL
- *  is only valid when the bot has a registered Web App shortname in BotFather;
- *  using it without one causes BUTTON_URL_INVALID errors. */
+/** Return the Mini App URL configured in .env */
 async function getMiniAppOpenUrl(_bot: Bot): Promise<string> {
-  return getMiniAppUrl(); // '' when env var is not set → no button rendered
+  return getMiniAppUrl();
+}
+
+/** MarkdownV2 character escaping helper */
+function escMd(text: string | null | undefined): string {
+  if (!text) return '';
+  return String(text).replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
 }
 
 const SUPPORTED_PROVIDERS = [
@@ -73,38 +74,30 @@ type Provider = typeof SUPPORTED_PROVIDERS[number];
 
 // ── Per-user context lookup ─────────────────────────────────────────────────
 
-interface UserContext {
-  branchId:   string;
-  cashierId:  string;
+async function resolveUserContext(fromId: number | undefined): Promise<TelegramUserContext | null> {
+  if (!fromId) return null;
+  return getRegisteredUser(fromId);
 }
 
-/**
- * Resolve the branchId + cashierId for the Telegram sender.
- *
- * Priority:
- *  1. User has registered in the Mini App and linked their telegramId → use their own IDs
- *  2. Sender is an admin → fall back to BOT_BRANCH_ID / BOT_CASHIER_ID
- *  3. Otherwise → return null (prompt them to register)
- */
-async function resolveUserContext(chatId: number, fromId: number | undefined): Promise<UserContext | null> {
-  if (fromId) {
-    const user = await prisma.user.findFirst({
-      where: { telegramId: BigInt(fromId) },
-      select: { id: true, branchId: true },
-    });
-    if (user && user.branchId) {
-      return { branchId: user.branchId, cashierId: user.id };
-    }
-  }
+/** Send friendly onboarding prompt with a Mini App button */
+async function sendRegisterPrompt(ctx: Context, bot: Bot): Promise<void> {
+  const miniAppUrl = await getMiniAppOpenUrl(bot);
+  const message =
+    `👋 *Welcome to CheckFlow ET\\!*\n\n` +
+    `Your Telegram account is not connected to a business yet\\.\n\n` +
+    `Tap the button below to *register your business* or *sign in* with your existing account\\. Once signed in, you can verify receipts instantly right here in Telegram\\!`;
 
-  // Fallback for admins
-  if (isAdmin(chatId)) {
-    const branchId   = BOT_BRANCH_ID();
-    const cashierId  = BOT_CASHIER_ID();
-    if (branchId && cashierId) return { branchId, cashierId };
+  if (miniAppUrl) {
+    const keyboard = new InlineKeyboard().webApp('📲 Open CheckFlow App', miniAppUrl);
+    await ctx.reply(message, { parse_mode: 'MarkdownV2', reply_markup: keyboard });
+  } else {
+    await ctx.reply(
+      `👋 *Welcome to CheckFlow ET\\!*\n\n` +
+      `Your Telegram account is not connected to a business yet\\.\n\n` +
+      `Please open the CheckFlow Mini App to register your business or sign in with your cashier credentials\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
   }
-
-  return null;
 }
 
 // ── Account registration wizard ───────────────────────────────────────────────
@@ -118,7 +111,7 @@ interface WizardState {
   step: WizardStep;
   provider?: BankProvider;
   accountNumber?: string;
-  expiresAt: number; // ms timestamp
+  expiresAt: number;
 }
 
 const WIZARD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -135,7 +128,6 @@ function getWizard(chatId: number): WizardState | null {
     wizardSessions.delete(chatId);
     return null;
   }
-  // Refresh timeout on activity
   session.expiresAt = Date.now() + WIZARD_TIMEOUT_MS;
   return session;
 }
@@ -148,15 +140,13 @@ function clearWizard(chatId: number): void {
 
 export function validateBotConfig(): string[] {
   const errors: string[] = [];
-  if (!BOT_TOKEN())      errors.push('TELEGRAM_BOT_TOKEN is not set in .env');
-  // BOT_BRANCH_ID / BOT_CASHIER_ID are still used as admin fallback
-  if (!isPublicMode() && allowedIdCount() === 0) {
-    errors.push('TELEGRAM_ALLOWED_CHAT_IDS is empty — all access will be denied. Add at least one Telegram ID, or set BOT_PUBLIC_ACCESS=true.');
+  if (!BOT_TOKEN()) {
+    errors.push('TELEGRAM_BOT_TOKEN is not set in .env');
   }
   return errors;
 }
 
-// ── Helper: download Telegram file to a Buffer (with retry) ─────────────────
+// ── Helper: download Telegram file to a Buffer ───────────────────────────────
 
 const DOWNLOAD_MAX_ATTEMPTS = 3;
 const DOWNLOAD_RETRY_DELAY_MS = 1_500;
@@ -173,7 +163,7 @@ async function downloadTelegramFile(
   if (!fileInfo.file_path) throw new Error('Telegram did not return a file_path');
 
   const url = `https://api.telegram.org/file/bot${BOT_TOKEN()}/${fileInfo.file_path}`;
-  const ext  = fileInfo.file_path.split('.').pop()?.toLowerCase() ?? '';
+  const ext = fileInfo.file_path.split('.').pop()?.toLowerCase() ?? '';
   const mime =
     ext === 'pdf'  ? 'application/pdf'  :
     ext === 'png'  ? 'image/png'        :
@@ -189,25 +179,11 @@ async function downloadTelegramFile(
         timeout: 30_000,
       });
       const buffer = Buffer.from(resp.data);
-      if (attempt > 1) {
-        logger.info(`[telegram] File download succeeded on attempt ${attempt} (fileId=${fileId})`);
-      }
       return { buffer, mime };
     } catch (err: any) {
       lastErr = err;
-      const isNetworkError =
-        err.code === 'ETIMEDOUT'    ||
-        err.code === 'ENETUNREACH'  ||
-        err.code === 'ECONNRESET'   ||
-        err.code === 'ECONNREFUSED' ||
-        err.code === 'ENOTFOUND';
-
-      logger.warn(
-        `[telegram] File download attempt ${attempt}/${DOWNLOAD_MAX_ATTEMPTS} failed` +
-        ` (${err.code ?? err.message}) fileId=${fileId}`
-      );
-
-      if (!isNetworkError || attempt === DOWNLOAD_MAX_ATTEMPTS) break;
+      logger.warn(`[telegram] File download attempt ${attempt}/${DOWNLOAD_MAX_ATTEMPTS} failed (${err.code ?? err.message})`);
+      if (attempt === DOWNLOAD_MAX_ATTEMPTS) break;
       await sleep(DOWNLOAD_RETRY_DELAY_MS);
     }
   }
@@ -215,14 +191,12 @@ async function downloadTelegramFile(
   throw lastErr;
 }
 
-// ── Helper: send a "thinking" indicator and return a cleanup fn ──────────────
 async function sendTyping(ctx: Context): Promise<void> {
   try {
     await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
   } catch { /* non-critical */ }
 }
 
-// ── Helper: run raw-text / URL verification via processVerification ──────────
 async function verifyText(
   text: string,
   branchId: string,
@@ -230,42 +204,22 @@ async function verifyText(
   expectedAmount?: number
 ): Promise<{ status: number; result: any }> {
   const normalized = dissectPayload(text);
-
-  // Also try parseRawText for supplementary amount extraction
   const { amount: rawAmount } = parseRawText(text);
 
   return processVerification({
     branchId,
     cashierId,
-    provider:       normalized.provider as any,
-    txnReference:   normalized.txnReference ?? '',
-    amount:         rawAmount ?? normalized.amount ?? undefined,
+    provider:         normalized.provider as any,
+    txnReference:     normalized.txnReference ?? '',
+    amount:           rawAmount ?? normalized.amount ?? undefined,
     expectedAmount,
-    payerPhone:     normalized.payerPhone,
-    payerName:      normalized.payerName,
+    payerPhone:       normalized.payerPhone,
+    payerName:        normalized.payerName,
     receivingAccount: normalized.receivingAccount,
-    senderAccount:  normalized.senderAccount,
-    printedDate:    normalized.printedDate,
-    rawText:        text,
+    senderAccount:    normalized.senderAccount,
+    printedDate:      normalized.printedDate,
+    rawText:          text,
   });
-}
-
-/** Send the "please register" message with a Mini App open button */
-async function sendRegisterPrompt(ctx: Context, bot: Bot): Promise<void> {
-  const miniAppUrl = await getMiniAppOpenUrl(bot);
-  if (miniAppUrl) {
-    const keyboard = new InlineKeyboard().webApp('📲 Open CheckFlow App', miniAppUrl);
-    await ctx.reply(
-      '👋 You\'re not registered yet\\.\n\n' +
-      'Open the app below to register your business, then send receipts for verification\\.',
-      { parse_mode: 'MarkdownV2', reply_markup: keyboard }
-    );
-  } else {
-    await ctx.reply(
-      '👋 You\'re not registered yet\\. Contact your administrator to get set up\\.',
-      { parse_mode: 'MarkdownV2' }
-    );
-  }
 }
 
 // ── Bot creation ─────────────────────────────────────────────────────────────
@@ -277,54 +231,57 @@ export function createBot(): Bot {
 
   const bot = new Bot(BOT_TOKEN());
 
-  // ── Global middleware: access control ──────────────────────────────────────
-  bot.use(async (ctx, next) => {
-    const chatId = ctx.chat?.id;
-    if (!chatId || !isAllowed(chatId)) {
-      await ctx.reply(
-        '⛔ Access denied.\n\nYou are not authorized to use this bot. Contact your system administrator.'
-      );
-      logger.warn(`[telegram] Blocked unauthorized access from chatId=${chatId}`);
-      return;
-    }
-    await next();
-  });
-
   // ── /start ─────────────────────────────────────────────────────────────────
   bot.command('start', async (ctx) => {
+    const fromId = ctx.from?.id;
+    const userCtx = await resolveUserContext(fromId);
     const miniAppUrl = await getMiniAppOpenUrl(bot);
     const keyboard = miniAppUrl ? new InlineKeyboard().webApp('📲 Open CheckFlow App', miniAppUrl) : undefined;
 
-    await ctx.reply(
-      `👋 *Welcome to CheckFlow ET Verification Bot\\!*\n\n` +
-      `I can verify payment receipts from *CBE*, *Telebirr*, *Dashen*, *Awash*, *BOA*, and more\\.\n\n` +
-      `*How to use:*\n` +
-      `📸 Send a *photo* of the receipt \\(screenshot or paper scan\\)\n` +
-      `📄 Send a *PDF* receipt as a document\n` +
-      `🔗 Paste a *CBE or Telebirr URL* \\(e\\.g\\. mbreceipt\\.cbe\\.com\\.et/…\\)\n` +
-      `✉️ Paste the *transaction reference* text\n` +
-      `⌨️ Use /manual for manual entry\n\n` +
-      `*Account management:*\n` +
-      `📋 /accounts — List registered receiving accounts\n` +
-      `➕ /addaccount — Register a new CBE / Telebirr / BOA / Awash account\n\n` +
-      `Type /help to see all commands\\.`,
-      { parse_mode: 'MarkdownV2', reply_markup: keyboard }
-    );
+    if (userCtx) {
+      const firstName = userCtx.fullName.split(' ')[0];
+      const roleLabel = userCtx.isAdmin ? '👑 Business Admin' : '👤 Staff Cashier';
+      await ctx.reply(
+        `👋 *Welcome back, ${escMd(firstName)}\\!*\n\n` +
+        `🏢 *Business:* ${escMd(userCtx.organizationName)}\n` +
+        `📍 *Branch:* ${escMd(userCtx.branchName)}\n` +
+        `👔 *Role:* ${roleLabel}\n\n` +
+        `You are ready to verify receipts\\! Send me:\n` +
+        `📸 A *photo* of a CBE or Telebirr receipt\n` +
+        `📄 A *PDF* document\n` +
+        `🔗 A *receipt link* or *transaction reference*\n` +
+        `⌨️ Or use /manual for manual verification\\.\n\n` +
+        (userCtx.isAdmin
+          ? `*Admin commands:*\n📋 /accounts — List receiving accounts\n➕ /addaccount — Register new receiving account\n\n`
+          : '') +
+        `Type /help to see all commands\\.`,
+        { parse_mode: 'MarkdownV2', reply_markup: keyboard }
+      );
+    } else {
+      await sendRegisterPrompt(ctx, bot);
+    }
   });
 
   // ── /help ──────────────────────────────────────────────────────────────────
   bot.command('help', async (ctx) => {
+    const fromId = ctx.from?.id;
+    const userCtx = await resolveUserContext(fromId);
+    const miniAppUrl = await getMiniAppOpenUrl(bot);
+    const keyboard = miniAppUrl ? new InlineKeyboard().webApp('📲 Open CheckFlow App', miniAppUrl) : undefined;
+
     await ctx.reply(
       `*CheckFlow ET Bot — Commands*\n\n` +
       `*Verification*\n` +
-      `/start — Welcome message & usage guide\n` +
-      `/help — Show this help\n` +
-      `/status — Show bot configuration status\n` +
+      `/start — Welcome message & account status\n` +
+      `/help — Show this help message\n` +
+      `/status — Show system and session status\n` +
       `/manual — Manual verification entry\n\n` +
-      `*Account Management*\n` +
-      `/accounts — List all registered receiving accounts\n` +
-      `/addaccount — Register a new receiving account \\(guided wizard\\)\n` +
-      `/cancel — Cancel an in\\-progress wizard\n\n` +
+      (userCtx?.isAdmin
+        ? `*Admin Management*\n` +
+          `/accounts — List registered receiving accounts\n` +
+          `/addaccount — Register a new receiving account \\(guided\\)\n` +
+          `/cancel — Cancel an in\\-progress wizard\n\n`
+        : '') +
       `*Manual entry format:*\n` +
       `\`/manual PROVIDER TXN\\_REF \\[AMOUNT\\]\`\n\n` +
       `Examples:\n` +
@@ -333,78 +290,91 @@ export function createBot(): Bot {
       `\`/manual TELEBIRR SB9876543210 500\`\n\n` +
       `*Supported providers:*\n` +
       `\`CBE · TELEBIRR · DASHEN · AWASH · BOA · ZEMEN · CBE\\_BIRR · MPESA · SIINQEE\``,
-      { parse_mode: 'MarkdownV2' }
+      { parse_mode: 'MarkdownV2', reply_markup: keyboard }
     );
   });
 
   // ── /status ────────────────────────────────────────────────────────────────
   bot.command('status', async (ctx) => {
-    const configErrors = validateBotConfig();
-    if (configErrors.length > 0) {
-      await ctx.reply(
-        `⚠️ *Bot configuration issues:*\n\n` +
-        configErrors.map((e) => `• ${e}`).join('\n'),
-        { parse_mode: 'MarkdownV2' }
-      );
+    const fromId = ctx.from?.id;
+    const userCtx = await resolveUserContext(fromId);
+
+    const totalOrgs = await prisma.organization.count().catch(() => 0);
+    const totalUsers = await prisma.user.count().catch(() => 0);
+    const totalAccounts = await prisma.bankSettlementAccount.count({ where: { isActive: true } }).catch(() => 0);
+
+    let msg =
+      `✅ *CheckFlow ET Bot Status*\n\n` +
+      `🤖 *Bot:* @${escMd(_botUsername || 'CheckFlow')}\n` +
+      `🌐 *Architecture:* Multi\\-tenant \\(Automatic business matching\\)\n` +
+      `🏢 *Connected Businesses:* ${totalOrgs}\n` +
+      `👥 *Registered Users:* ${totalUsers}\n` +
+      `🏦 *Active Receiving Accounts:* ${totalAccounts}\n\n`;
+
+    if (userCtx) {
+      msg +=
+        `👤 *Your Active Session:*\n` +
+        `• Name: ${escMd(userCtx.fullName)}\n` +
+        `• Business: ${escMd(userCtx.organizationName)}\n` +
+        `• Branch: ${escMd(userCtx.branchName)}\n` +
+        `• Role: ${userCtx.isAdmin ? '👑 Business Admin' : '👤 Cashier'}\n`;
     } else {
-      await ctx.reply(
-        `✅ *Bot is running correctly*\n\n` +
-        `Branch ID: \`${BOT_BRANCH_ID()}\`\n` +
-        `Cashier ID: \`${BOT_CASHIER_ID()}\`\n` +
-        `Whitelisted IDs: ${allowedIdCount()}`,
-        { parse_mode: 'MarkdownV2' }
-      );
+      msg += `⚠️ _Your Telegram account is not yet connected to a business\\. Tap below to register or log in\\._`;
     }
+
+    const miniAppUrl = await getMiniAppOpenUrl(bot);
+    const keyboard = (!userCtx && miniAppUrl) ? new InlineKeyboard().webApp('📲 Open CheckFlow App', miniAppUrl) : undefined;
+
+    await ctx.reply(msg, { parse_mode: 'MarkdownV2', reply_markup: keyboard });
   });
 
-  // ── /accounts — list registered receiving accounts ──────────────────────────
+  // ── /accounts — list registered receiving accounts (Admin only) ─────────────
   bot.command('accounts', async (ctx) => {
     try {
       const fromId = ctx.from?.id;
-      const chatId = ctx.chat!.id;
-      const userCtx = await resolveUserContext(chatId, fromId);
+      const userCtx = await resolveUserContext(fromId);
 
       if (!userCtx) {
         await sendRegisterPrompt(ctx, bot);
         return;
       }
 
-      const branch = await prisma.branch.findUnique({
-        where: { id: userCtx.branchId },
-        include: {
-          organization: {
-            include: {
-              bankSettlementAccounts: { orderBy: { bankName: 'asc' } }
-            }
-          }
-        }
-      });
+      if (!userCtx.isAdmin) {
+        await ctx.reply(
+          `🔒 *Admins Only*\n\n` +
+          `Viewing receiving accounts is for business admins only\\. You can verify customer payments by sending receipt photos or PDFs\\.`,
+          { parse_mode: 'MarkdownV2' }
+        );
+        return;
+      }
 
-      const accounts = branch?.organization?.bankSettlementAccounts ?? [];
+      const accounts = await prisma.bankSettlementAccount.findMany({
+        where: { organizationId: userCtx.organizationId },
+        orderBy: { bankName: 'asc' },
+      });
 
       if (accounts.length === 0) {
         await ctx.reply(
-          `📋 *No receiving accounts registered yet\\.*\n\n` +
+          `📋 *No receiving accounts registered yet for ${escMd(userCtx.organizationName)}\\.*\n\n` +
           `Use /addaccount to register your first CBE or Telebirr account\\.`,
           { parse_mode: 'MarkdownV2' }
         );
         return;
       }
 
-      // Group by bank
       const grouped = accounts.reduce<Record<string, typeof accounts>>((acc, a) => {
         if (!acc[a.bankName]) acc[a.bankName] = [];
         acc[a.bankName].push(a);
         return acc;
       }, {});
 
-      let msg = `📋 *Registered Receiving Accounts*\n\n`;
+      let msg = `📋 *Receiving Accounts for ${escMd(userCtx.organizationName)}*\n\n`;
       for (const [bank, list] of Object.entries(grouped)) {
         const bankLabel = bank === 'TELEBIRR' ? '📱 TELEBIRR' : `🏦 ${bank}`;
         msg += `*${bankLabel}*\n`;
         for (const a of list) {
           const status = a.isActive ? '✅' : '❌ \\(inactive\\)';
-          msg += `  • \`${a.accountNumber}\` — ${a.accountHolderName.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&')} ${status}\n`;
+          msg += `  • \`${a.accountNumber}\` — ${escMd(a.accountHolderName)} ${status}\n`;
         }
         msg += '\n';
       }
@@ -417,20 +387,30 @@ export function createBot(): Bot {
     }
   });
 
-  // ── /addaccount — start account registration wizard ───────────────────────
+  // ── /addaccount — start account registration wizard (Admin only) ────────────
   bot.command('addaccount', async (ctx) => {
     const fromId = ctx.from?.id;
     const chatId = ctx.chat!.id;
-    const userCtx = await resolveUserContext(chatId, fromId);
+    const userCtx = await resolveUserContext(fromId);
 
     if (!userCtx) {
       await sendRegisterPrompt(ctx, bot);
       return;
     }
 
+    if (!userCtx.isAdmin) {
+      await ctx.reply(
+        `🔒 *Admins Only*\n\n` +
+        `Adding receiving accounts is for business admins only\\.`,
+        { parse_mode: 'MarkdownV2' }
+      );
+      return;
+    }
+
     startWizard(chatId);
     await ctx.reply(
       `🏦 *Register a Receiving Account*\n\n` +
+      `Business: *${escMd(userCtx.organizationName)}*\n\n` +
       `Which bank/provider?\n\n` +
       `Reply with one of:\n` +
       `\`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\`\n\n` +
@@ -439,7 +419,7 @@ export function createBot(): Bot {
     );
   });
 
-  // ── /cancel — abort any active wizard ────────────────────────────────────
+  // ── /cancel — abort active wizard ──────────────────────────────────────────
   bot.command('cancel', async (ctx) => {
     const chatId = ctx.chat!.id;
     if (wizardSessions.has(chatId)) {
@@ -450,7 +430,7 @@ export function createBot(): Bot {
     }
   });
 
-  // ── /manual PROVIDER TXN_REF [AMOUNT] ─────────────────────────────────────
+  // ── /manual PROVIDER TXN_REF [AMOUNT] ──────────────────────────────────────
   bot.command('manual', async (ctx) => {
     const args = ctx.match?.trim().split(/\s+/) ?? [];
 
@@ -479,8 +459,7 @@ export function createBot(): Bot {
     }
 
     const fromId  = ctx.from?.id;
-    const chatId  = ctx.chat!.id;
-    const userCtx = await resolveUserContext(chatId, fromId);
+    const userCtx = await resolveUserContext(fromId);
 
     if (!userCtx) {
       await sendRegisterPrompt(ctx, bot);
@@ -491,11 +470,11 @@ export function createBot(): Bot {
     await ctx.reply('⏳ Verifying manual entry\\.\\.\\.', { parse_mode: 'MarkdownV2' });
 
     try {
-      logger.info(`[telegram] manual verify chatId=${chatId} provider=${providerArg} ref=${txnRef} amount=${amount ?? 'N/A'}`);
+      logger.info(`[telegram] manual verify user=${userCtx.fullName} org=${userCtx.organizationName} provider=${providerArg} ref=${txnRef}`);
 
       const outcome = await processVerification({
         branchId:      userCtx.branchId,
-        cashierId:     userCtx.cashierId,
+        cashierId:     userCtx.userId,
         provider:      providerArg as any,
         txnReference:  txnRef,
         amount:        amount,
@@ -513,23 +492,22 @@ export function createBot(): Bot {
     }
   });
 
-  // ── Photo handler: receipt screenshot ─────────────────────────────────────
+  // ── Photo handler: receipt screenshot ──────────────────────────────────────
   bot.on('message:photo', async (ctx) => {
-    await sendTyping(ctx);
-    try { await ctx.reply('⏳ Verifying receipt photo\\.\\.\\.', { parse_mode: 'MarkdownV2' }); } catch { /* non-critical */ }
-
     const fromId  = ctx.from?.id;
-    const chatId  = ctx.chat!.id;
-    const userCtx = await resolveUserContext(chatId, fromId);
+    const userCtx = await resolveUserContext(fromId);
 
     if (!userCtx) {
       await sendRegisterPrompt(ctx, bot);
       return;
     }
 
+    await sendTyping(ctx);
+    try { await ctx.reply('⏳ Verifying receipt photo\\.\\.\\.', { parse_mode: 'MarkdownV2' }); } catch { /* non-critical */ }
+
     const photos  = ctx.message.photo;
     const largest = photos[photos.length - 1];
-    logger.info(`[telegram] photo verify chatId=${chatId} fileId=${largest.file_id} size=${largest.file_size ?? '?'}B`);
+    logger.info(`[telegram] photo verify user=${userCtx.fullName} (${userCtx.organizationName}) fileId=${largest.file_id}`);
 
     let replyText: string;
     try {
@@ -538,23 +516,23 @@ export function createBot(): Bot {
         buffer,
         mimetype:  mime,
         branchId:  userCtx.branchId,
-        cashierId: userCtx.cashierId,
+        cashierId: userCtx.userId,
       });
       logger.info(`[telegram] photo result: ${formatStatusLine(outcome.result)}`);
       replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
     } catch (err: any) {
       logger.error(`[telegram] photo error: ${err.message}`);
-      replyText = '🆘 Failed to process this image\\. Please try again or send the receipt as a document \\(PDF / uncompressed image\\)\\.';
+      replyText = '🆘 Failed to process this image\\. Please try again or send the receipt as a document \\(PDF\\)\\.';
     }
 
     try {
       await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
     } catch (sendErr: any) {
-      logger.error(`[telegram] photo reply failed (Telegram unreachable?): ${sendErr.message}`);
+      logger.error(`[telegram] photo reply failed: ${sendErr.message}`);
     }
   });
 
-  // ── Document handler: PDF receipts or uncompressed images ─────────────────
+  // ── Document handler: PDF receipts or uncompressed images ──────────────────
   bot.on('message:document', async (ctx) => {
     const doc      = ctx.message.document;
     const mimeType = doc.mime_type ?? '';
@@ -571,19 +549,18 @@ export function createBot(): Bot {
       return;
     }
 
-    await sendTyping(ctx);
-    try { await ctx.reply(`⏳ Verifying ${isPdf ? 'PDF' : 'image'} document\\.\\.\\.`, { parse_mode: 'MarkdownV2' }); } catch { /* non-critical */ }
-
     const fromId  = ctx.from?.id;
-    const chatId  = ctx.chat!.id;
-    const userCtx = await resolveUserContext(chatId, fromId);
+    const userCtx = await resolveUserContext(fromId);
 
     if (!userCtx) {
       await sendRegisterPrompt(ctx, bot);
       return;
     }
 
-    logger.info(`[telegram] document verify chatId=${chatId} mime=${mimeType} fileId=${doc.file_id}`);
+    await sendTyping(ctx);
+    try { await ctx.reply(`⏳ Verifying ${isPdf ? 'PDF' : 'image'} document\\.\\.\\.`, { parse_mode: 'MarkdownV2' }); } catch { /* non-critical */ }
+
+    logger.info(`[telegram] document verify user=${userCtx.fullName} (${userCtx.organizationName}) mime=${mimeType} fileId=${doc.file_id}`);
 
     let replyText: string;
     try {
@@ -592,7 +569,7 @@ export function createBot(): Bot {
         buffer,
         mimetype:  isPdf ? 'application/pdf' : mime,
         branchId:  userCtx.branchId,
-        cashierId: userCtx.cashierId,
+        cashierId: userCtx.userId,
       });
       logger.info(`[telegram] document result: ${formatStatusLine(outcome.result)}`);
       replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
@@ -604,31 +581,28 @@ export function createBot(): Bot {
     try {
       await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
     } catch (sendErr: any) {
-      logger.error(`[telegram] document reply failed (Telegram unreachable?): ${sendErr.message}`);
+      logger.error(`[telegram] document reply failed: ${sendErr.message}`);
     }
   });
 
-  // ── Text handler: URL, raw transaction reference, or wizard input ───────────
+  // ── Text handler: URL, raw transaction reference, or wizard input ────────────
   bot.on('message:text', async (ctx) => {
     const text   = ctx.message.text.trim();
     const chatId = ctx.chat!.id;
+    const fromId = ctx.from?.id;
 
-    // Ignore messages that look like commands (handled above)
     if (text.startsWith('/')) return;
 
-    // ── Wizard intercept ───────────────────────────────────────────────────────
+    // ── Wizard intercept (account registration) ────────────────────────────────
     const session = getWizard(chatId);
     if (session) {
-      const fromId  = ctx.from?.id;
-      const userCtx = await resolveUserContext(chatId, fromId);
+      const userCtx = await resolveUserContext(fromId);
 
       if (session.step === 'provider') {
         const input = text.toUpperCase() as BankProvider;
         if (!ACCOUNT_PROVIDERS.includes(input)) {
           await ctx.reply(
-            `❌ Unknown provider \`${text}\`\.
-
-Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
+            `❌ Unknown provider \`${text}\`\\.\n\nPlease reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
             { parse_mode: 'MarkdownV2' }
           );
           return;
@@ -636,7 +610,7 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
         session.provider = input;
         session.step = 'accountNumber';
         await ctx.reply(
-          `✏️ Enter the *${input}* account number:`,
+          `✏️ Enter the *${input}* account number or phone:`,
           { parse_mode: 'MarkdownV2' }
         );
         return;
@@ -650,7 +624,7 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
         session.accountNumber = text;
         session.step = 'holderName';
         await ctx.reply(
-          `✏️ Enter the *account holder name* \\(as shown on the bank statement\\):`,
+          `✏️ Enter the *account holder name* \\(as registered at bank\\):`,
           { parse_mode: 'MarkdownV2' }
         );
         return;
@@ -661,27 +635,15 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
         const { provider, accountNumber } = session;
         clearWizard(chatId);
 
-        if (!userCtx) {
-          await sendRegisterPrompt(ctx, bot);
+        if (!userCtx || !userCtx.isAdmin) {
+          await ctx.reply('🔒 Only registered business admins can save receiving accounts\\.', { parse_mode: 'MarkdownV2' });
           return;
         }
 
         try {
-          // Resolve org from branch
-          const branch = await prisma.branch.findUnique({
-            where: { id: userCtx.branchId },
-            select: { organizationId: true }
-          });
-
-          if (!branch) {
-            await ctx.reply('🆘 Could not resolve branch\\. Check configuration\\.', { parse_mode: 'MarkdownV2' });
-            return;
-          }
-
-          // Check for duplicate
           const existing = await prisma.bankSettlementAccount.findFirst({
             where: {
-              organizationId: branch.organizationId,
+              organizationId: userCtx.organizationId,
               bankName: provider! as any,
               accountNumber: accountNumber!
             }
@@ -689,7 +651,7 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
 
           if (existing) {
             await ctx.reply(
-              `⚠️ Account \`${accountNumber}\` is already registered for *${provider}*\\.`,
+              `⚠️ Account \`${accountNumber}\` is already registered for *${provider}* in *${escMd(userCtx.organizationName)}*\\.`,
               { parse_mode: 'MarkdownV2' }
             );
             return;
@@ -697,7 +659,7 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
 
           await prisma.bankSettlementAccount.create({
             data: {
-              organizationId: branch.organizationId,
+              organizationId: userCtx.organizationId,
               bankName: provider! as any,
               accountNumber: accountNumber!,
               accountHolderName: holderName,
@@ -705,18 +667,16 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
             }
           });
 
-          // Invalidate cache
           accountsCache.delete(`branch:${userCtx.branchId}`);
+          logger.info(`[telegram] registered account provider=${provider} account=${accountNumber} org=${userCtx.organizationId}`);
 
-          logger.info(`[telegram] registered account provider=${provider} account=${accountNumber} org=${branch.organizationId}`);
-
-          const safeHolder = holderName.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
           await ctx.reply(
             `✅ *Account registered successfully\\!*\n\n` +
+            `🏢 Business: *${escMd(userCtx.organizationName)}*\n` +
             `🏦 Provider: *${provider}*\n` +
             `🔢 Account: \`${accountNumber}\`\n` +
-            `👤 Holder: ${safeHolder}\n\n` +
-            `Receipts sent to this account will now be verified\\.`,
+            `👤 Holder: ${escMd(holderName)}\n\n` +
+            `Customer receipts sent to this account will now be verified\\.`,
             { parse_mode: 'MarkdownV2' }
           );
         } catch (err: any) {
@@ -728,8 +688,7 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
     }
 
     // ── Normal verification path ───────────────────────────────────────────────
-    const fromId  = ctx.from?.id;
-    const userCtx = await resolveUserContext(chatId, fromId);
+    const userCtx = await resolveUserContext(fromId);
 
     if (!userCtx) {
       await sendRegisterPrompt(ctx, bot);
@@ -746,11 +705,11 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
       );
     } catch { /* non-critical */ }
 
-    logger.info(`[telegram] text verify chatId=${chatId} isUrl=${isUrl} text="${text.slice(0, 80)}"`);
+    logger.info(`[telegram] text verify user=${userCtx.fullName} (${userCtx.organizationName}) isUrl=${isUrl}`);
 
     let replyText: string;
     try {
-      const outcome = await verifyText(text, userCtx.branchId, userCtx.cashierId);
+      const outcome = await verifyText(text, userCtx.branchId, userCtx.userId);
       logger.info(`[telegram] text result: ${formatStatusLine(outcome.result)}`);
       replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
     } catch (err: any) {
@@ -761,11 +720,11 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
     try {
       await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
     } catch (sendErr: any) {
-      logger.error(`[telegram] text reply failed (Telegram unreachable?): ${sendErr.message}`);
+      logger.error(`[telegram] text reply failed: ${sendErr.message}`);
     }
   });
 
-  // ── Catch-all error handler ────────────────────────────────────────────────
+  // ── Error handler ──────────────────────────────────────────────────────────
   bot.catch((err) => {
     logger.error(`[telegram] Unhandled bot error: ${err.message ?? err}`);
   });
@@ -773,7 +732,7 @@ Please reply with one of: \`CBE\` · \`TELEBIRR\` · \`BOA\` · \`AWASH\``,
   return bot;
 }
 
-/** Start the bot in long-polling mode (no public URL required). */
+/** Start the bot in long-polling mode */
 export function startBot(): void {
   const configErrors = validateBotConfig();
   if (configErrors.length > 0) {
@@ -783,26 +742,21 @@ export function startBot(): void {
   }
 
   logger.info('[telegram] Initialising bot...');
-  logger.info(`[telegram] Public mode: ${isPublicMode()}, AllowedIDs: ${allowedIdCount()}`);
-  logger.info(`[telegram] Admin fallback Branch=${BOT_BRANCH_ID()} Cashier=${BOT_CASHIER_ID()}`);
+  logger.info('[telegram] Architecture: Multi-tenant (Dynamic user matching enabled)');
 
   (async () => {
     try {
       const bot = createBot();
 
-      // ── Step 1: clear any existing webhook ─────────────────────────────────
       logger.info('[telegram] Clearing any existing webhook...');
       await bot.api.deleteWebhook({ drop_pending_updates: false });
       logger.info('[telegram] Webhook cleared — starting long-poll...');
 
-      // Fetch bot username early so it's cached before any message arrives
       await getBotUsername(bot);
 
-      // ── Step 2: start polling ───────────────────────────────────────────────
       bot.start({
         onStart: (info) => {
-          logger.info(`[telegram] ✅ Bot @${info.username} is online and polling`);
-          logger.info(`[telegram] Admin fallback Branch=${BOT_BRANCH_ID()} Cashier=${BOT_CASHIER_ID()} AllowedIDs=${allowedIdCount()} PublicMode=${isPublicMode()}`);
+          logger.info(`[telegram] ✅ Bot @${info.username} is online and polling (Multi-tenant mode)`);
         },
       });
 

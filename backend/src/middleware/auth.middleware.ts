@@ -7,36 +7,52 @@ import bcrypt from 'bcryptjs';
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 
 export const requireAuth = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  let token: string | undefined;
+
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Unauthorized' });
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
+  } else if (req.cookies && req.cookies.token) {
+    token = req.cookies.token;
+  }
+
+  if (!token) {
+    res.status(401).json({ error: 'Please sign in to continue.' });
     return;
   }
 
-  const token = authHeader.split(' ')[1];
   try {
     const payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
     req.user = payload;
     next();
   } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
+    res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
   }
 };
 
-export const requireManager = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+/**
+ * Ensures caller is an Admin (OWNER or MANAGER).
+ * Cashiers are rejected with a clear, friendly error.
+ */
+export const requireAdmin = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   if (!req.user) {
-    res.status(401).json({ error: 'Unauthorized' });
+    res.status(401).json({ error: 'Please sign in to continue.' });
     return;
   }
-  
+
   if (req.user.role !== 'MANAGER' && req.user.role !== 'OWNER') {
-    res.status(403).json({ error: 'Forbidden: Requires manager or owner privileges.' });
+    res.status(403).json({ error: 'This section is for business admins only.' });
     return;
   }
-  
+
   next();
 };
 
+export const requireManager = requireAdmin;
+
+/**
+ * Legacy counter tablet PIN check (kept for backward compatibility).
+ */
 export const requireCashierPIN = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   const pin = req.headers['x-cashier-pin'] as string;
   const branchId = req.headers['x-branch-id'] as string;
@@ -69,7 +85,6 @@ export const requireCashierPIN = async (req: AuthenticatedRequest, res: Response
     }
 
     req.cashierId = matchedUser.id;
-    // Embed standard user auth context if not present
     if (!req.user) {
       req.user = {
         userId: matchedUser.id,
@@ -78,7 +93,7 @@ export const requireCashierPIN = async (req: AuthenticatedRequest, res: Response
         organizationId: matchedUser.organizationId
       };
     }
-    
+
     next();
   } catch (error) {
     res.status(500).json({ error: 'Authentication error' });

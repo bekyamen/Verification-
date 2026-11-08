@@ -1,36 +1,66 @@
 import { Router, Response } from 'express';
-import { verifyTextPayload, verifyImagePayload, verifyUrlPayload, verifyManualPayload } from '../controllers/verification.controller';
-import { requireAuth, requireCashierPIN } from '../middleware/auth.middleware';
+import {
+  verifyTextPayload,
+  verifyImagePayload,
+  verifyUrlPayload,
+  verifyManualPayload,
+} from '../controllers/verification.controller';
+import { requireAuth, requireAdmin } from '../middleware/auth.middleware';
 import { upload } from '../middleware/multer.middleware';
 import { generateDailyExcelReport } from '../services/report.service';
 import { AuthenticatedRequest } from '../types';
+import {
+  getOrganizationAccounts,
+  registerAccount,
+  updateAccount,
+  deleteAccount,
+  toggleAccountStatus,
+} from '../controllers/accounts.controller';
+import { runStatusProviderProbe, getStatusCapabilities } from '../services/statusProbeService';
 
 const router = Router();
 
 // Health Check
-router.get('/health', (req, res) => {
+router.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
+// Flexible upload middleware accepting either 'receipt' or 'file' field name
+const uploadReceiptOrFile = (req: any, res: any, next: any) => {
+  upload.fields([
+    { name: 'receipt', maxCount: 1 },
+    { name: 'file', maxCount: 1 },
+  ])(req, res, (err: any) => {
+    if (err) return next(err);
+    if (req.files) {
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+      req.file = files['receipt']?.[0] || files['file']?.[0];
+    }
+    next();
+  });
+};
 
-// Verification Endpoints (Used by counter tablets)
-// Tablets call POST /auth/cashier-token once at shift start to get an 8-hour JWT,
-// then send it as "Authorization: Bearer <token>" on every verify request.
-// requireAuth verifies the JWT in < 1 ms — no bcrypt on every scan.
+// ── Verification Endpoints (Accessible by both Cashier and Admin) ─────────────
 router.post('/verify/text',   requireAuth, verifyTextPayload);
-router.post('/verify/image',  requireAuth, upload.single('receipt'), verifyImagePayload);
+router.post('/verify/image',  requireAuth, uploadReceiptOrFile, verifyImagePayload);
 router.post('/verify/url',    requireAuth, verifyUrlPayload);
 router.post('/verify/manual', requireAuth, verifyManualPayload);
 
-// Manager/Owner Reporting Endpoints (Require full JWT auth)
-router.get('/reports/daily', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+// ── Receiving Accounts Endpoints (Admin Only) ─────────────────────────────────
+router.get('/settings/accounts',              requireAuth, requireAdmin, getOrganizationAccounts);
+router.post('/settings/accounts',             requireAuth, requireAdmin, registerAccount);
+router.patch('/settings/accounts/:id',        requireAuth, requireAdmin, updateAccount);
+router.delete('/settings/accounts/:id',       requireAuth, requireAdmin, deleteAccount);
+router.patch('/settings/accounts/:id/toggle', requireAuth, requireAdmin, toggleAccountStatus);
+
+// ── Manager/Owner Reporting Endpoints (Admin Only) ────────────────────────────
+router.get('/reports/daily', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   const user = req.user;
   if (!user || !user.branchId) {
     res.status(403).json({ error: 'Permission denied. Branch ID required.' });
     return;
   }
 
-  
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -43,20 +73,8 @@ router.get('/reports/daily', requireAuth, async (req: AuthenticatedRequest, res:
   }
 });
 
-// Settings Endpoints
-import { getOrganizationAccounts, registerAccount, updateAccount, deleteAccount, toggleAccountStatus } from '../controllers/accounts.controller';
-import { requireManager } from '../middleware/auth.middleware';
-
-router.get('/settings/accounts',              requireAuth,                    getOrganizationAccounts);
-router.post('/settings/accounts',             requireAuth, requireManager,    registerAccount);
-router.patch('/settings/accounts/:id',        requireAuth, requireManager,    updateAccount);
-router.delete('/settings/accounts/:id',       requireAuth, requireManager,    deleteAccount);
-router.patch('/settings/accounts/:id/toggle', requireAuth, requireManager,    toggleAccountStatus);
-
-// Provider Status / Health Probe Endpoint (for dashboard and ops monitoring)
-import { runStatusProviderProbe, getStatusCapabilities } from '../services/statusProbeService';
-
-router.get('/status/providers', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+// ── Provider Status / Health Probe Endpoint (Admin Only) ──────────────────────
+router.get('/status/providers', requireAuth, requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
   try {
     const [cbeResult, cbeNewResult, telebirrResult] = await Promise.allSettled([
       runStatusProviderProbe('cbe'),

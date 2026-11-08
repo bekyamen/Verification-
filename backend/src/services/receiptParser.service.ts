@@ -1,3 +1,4 @@
+import '../polyfills';
 import { createWorker, PSM } from 'tesseract.js';
 const pdfParse = require('pdf-parse');
 import { ExtractedReceiptData } from '../types';

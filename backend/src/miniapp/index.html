@@ -2,22 +2,24 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
-  <meta name="description" content="CheckFlow ET — Manage your payment verification accounts inside Telegram" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="description" content="CheckFlow ET — Ethiopian Payment Verification (CBE & Telebirr)" />
   <title>CheckFlow ET</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    /* ── Design tokens from Telegram theme ──────────────────────────────── */
+    /* ── Telegram theme tokens & glassmorphism ───────────────────────────── */
     :root {
-      --bg:        var(--tg-theme-bg-color,        #ffffff);
-      --bg2:       var(--tg-theme-secondary-bg-color, #f4f4f4);
-      --text:      var(--tg-theme-text-color,       #000000);
-      --hint:      var(--tg-theme-hint-color,        #888888);
-      --link:      var(--tg-theme-link-color,        #2481cc);
-      --button:    var(--tg-theme-button-color,      #2481cc);
-      --btn-text:  var(--tg-theme-button-text-color, #ffffff);
-      --accent:    var(--tg-theme-accent-text-color, #2481cc);
-      --destructive: var(--tg-theme-destructive-text-color, #e53935);
+      --bg: var(--tg-theme-bg-color, #121214);
+      --bg2: var(--tg-theme-secondary-bg-color, #1c1c1e);
+      --text: var(--tg-theme-text-color, #ffffff);
+      --hint: var(--tg-theme-hint-color, #8e8e93);
+      --link: var(--tg-theme-link-color, #0a84ff);
+      --button: var(--tg-theme-button-color, #0a84ff);
+      --btn-text: var(--tg-theme-button-text-color, #ffffff);
+      --accent: #ff9f0a;
+      --success: #30d158;
+      --destructive: var(--tg-theme-destructive-text-color, #ff453a);
+      --glass-border: rgba(255, 255, 255, 0.08);
       --radius: 14px;
       --radius-sm: 8px;
       --transition: 0.18s cubic-bezier(.4,0,.2,1);
@@ -50,307 +52,282 @@
       display: flex;
       align-items: center;
       padding: 18px 16px 14px;
-      gap: 10px;
+      gap: 12px;
+      border-bottom: 1px solid var(--glass-border);
     }
     .header-logo {
-      width: 36px; height: 36px;
-      background: linear-gradient(135deg, var(--button), color-mix(in srgb, var(--button) 60%, #000));
-      border-radius: 10px;
+      width: 40px; height: 40px;
+      background: linear-gradient(135deg, var(--button), #5e5ce6);
+      border-radius: 12px;
       display: flex; align-items: center; justify-content: center;
-      font-size: 18px; flex-shrink: 0;
+      font-size: 20px; flex-shrink: 0;
+      color: #fff;
     }
+    .header-title-box { flex: 1; }
     .header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
-    .header p  { font-size: 13px; color: var(--hint); }
+    .header p  { font-size: 13px; color: var(--hint); margin-top: 2px; }
 
-    /* ── Section card ───────────────────────────────────────────────────── */
+    /* ── Card ───────────────────────────────────────────────────────────── */
     .card {
       background: var(--bg2);
       border-radius: var(--radius);
-      margin: 0 12px 12px;
+      border: 1px solid var(--glass-border);
+      margin: 0 12px 14px;
       overflow: hidden;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.25);
     }
     .card-row {
       display: flex;
       align-items: center;
       padding: 14px 16px;
       gap: 12px;
-      border-bottom: 1px solid color-mix(in srgb, var(--hint) 20%, transparent);
+      border-bottom: 1px solid var(--glass-border);
       transition: background var(--transition);
       cursor: pointer;
     }
     .card-row:last-child { border-bottom: none; }
-    .card-row:active { background: color-mix(in srgb, var(--hint) 15%, transparent); }
+    .card-row:active { background: rgba(255, 255, 255, 0.05); }
     .card-row.no-tap { cursor: default; }
     .card-row.no-tap:active { background: transparent; }
 
     .row-icon {
-      width: 36px; height: 36px; border-radius: 9px;
+      width: 38px; height: 38px; border-radius: 10px;
       display: flex; align-items: center; justify-content: center;
       font-size: 18px; flex-shrink: 0;
     }
-    .row-icon.blue  { background: color-mix(in srgb, var(--button) 18%, transparent); }
-    .row-icon.green { background: color-mix(in srgb, #43a047 18%, transparent); }
-    .row-icon.red   { background: color-mix(in srgb, var(--destructive) 18%, transparent); }
-    .row-icon.orange{ background: color-mix(in srgb, #fb8c00 18%, transparent); }
+    .row-icon.blue   { background: rgba(10, 132, 255, 0.15); color: #0a84ff; }
+    .row-icon.green  { background: rgba(48, 209, 88, 0.15); color: #30d158; }
+    .row-icon.orange { background: rgba(255, 159, 10, 0.15); color: #ff9f0a; }
+    .row-icon.red    { background: rgba(255, 69, 58, 0.15); color: #ff453a; }
 
     .row-body { flex: 1; min-width: 0; }
-    .row-body strong { display: block; font-size: 15px; font-weight: 600; }
-    .row-body span   { display: block; font-size: 13px; color: var(--hint); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .row-badge {
-      font-size: 12px; font-weight: 600;
-      padding: 2px 8px; border-radius: 20px;
-      flex-shrink: 0;
-    }
-    .row-badge.active   { background: color-mix(in srgb,#43a047 18%,transparent); color:#43a047; }
-    .row-badge.inactive { background: color-mix(in srgb,var(--hint) 18%,transparent); color:var(--hint); }
+    .row-body strong { display: block; font-size: 15px; font-weight: 600; color: #fff; }
+    .row-body span   { display: block; font-size: 13px; color: var(--hint); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-    .row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .badge {
+      font-size: 11px; font-weight: 700;
+      padding: 4px 8px; border-radius: 10px;
+      flex-shrink: 0; text-transform: uppercase;
+    }
+    .badge.active   { background: rgba(48, 209, 88, 0.15); color: #30d158; }
+    .badge.inactive { background: rgba(142, 142, 147, 0.15); color: var(--hint); }
+
+    .row-actions { display: flex; gap: 8px; flex-shrink: 0; }
     .icon-btn {
-      width: 32px; height: 32px; border-radius: 8px; border: none;
-      background: color-mix(in srgb, var(--hint) 15%, transparent);
-      color: var(--text); font-size: 16px; cursor: pointer;
+      width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--glass-border);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text); font-size: 15px; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       transition: background var(--transition);
     }
-    .icon-btn:active { background: color-mix(in srgb, var(--hint) 30%, transparent); }
+    .icon-btn:active { background: rgba(255, 255, 255, 0.15); }
     .icon-btn.danger { color: var(--destructive); }
 
-    /* ── Forms ──────────────────────────────────────────────────────────── */
-    .form-section { padding: 20px 16px 0; }
-    .form-section label {
+    /* ── Section labels ─────────────────────────────────────────────────── */
+    .section-label {
+      font-size: 12px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.6px;
+      color: var(--hint);
+      padding: 12px 16px 6px;
+    }
+
+    /* ── Forms & inputs ─────────────────────────────────────────────────── */
+    .form-wrap { padding: 14px 16px; }
+    label {
       display: block; font-size: 12px; font-weight: 600;
       color: var(--hint); text-transform: uppercase; letter-spacing: .5px;
       margin-bottom: 6px;
     }
-    .form-section label span.req { color: var(--destructive); }
+    label span.req { color: var(--destructive); }
 
-    input, select {
-      width: 100%; padding: 14px 14px;
-      background: var(--bg2); border: 1.5px solid transparent;
+    input, select, textarea {
+      width: 100%; padding: 13px 14px;
+      background: var(--bg2); border: 1.5px solid var(--glass-border);
       border-radius: var(--radius-sm); color: var(--text);
       font-size: 15px; font-family: inherit; outline: none;
       transition: border-color var(--transition);
       -webkit-appearance: none;
     }
-    input:focus, select:focus { border-color: var(--button); }
+    input:focus, select:focus, textarea:focus { border-color: var(--button); }
     input.error { border-color: var(--destructive); }
-    input[type=number] { -moz-appearance: textfield; }
-    input[type=number]::-webkit-outer-spin-button,
-    input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 
     .field-error { font-size: 12px; color: var(--destructive); margin-top: 4px; display: none; }
     .field-error.visible { display: block; }
+    .form-hint { font-size: 12px; color: var(--hint); margin-top: 5px; }
+    .form-gap { height: 14px; }
 
-    .form-hint { font-size: 13px; color: var(--hint); margin-top: 6px; }
+    /* ── Buttons ────────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 100%; padding: 14px 18px;
+      background: var(--button); color: var(--btn-text);
+      border: none; border-radius: var(--radius-sm);
+      font-size: 15px; font-weight: 700; cursor: pointer;
+      transition: opacity var(--transition), transform var(--transition);
+    }
+    .btn:active { transform: scale(0.98); opacity: 0.9; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn.secondary { background: rgba(255, 255, 255, 0.1); color: #fff; }
+    .btn.ghost { background: transparent; color: var(--link); border: 1.5px solid var(--glass-border); }
+    .btn.danger { background: var(--destructive); color: #fff; }
 
-    /* ── PIN dots ────────────────────────────────────────────────────────── */
+    /* ── Tabs (Auth toggles & verification tabs) ─────────────────────────── */
+    .tab-pills {
+      display: flex; background: rgba(255, 255, 255, 0.05);
+      padding: 4px; border-radius: 12px; gap: 4px; margin: 0 12px 16px;
+    }
+    .tab-pill {
+      flex: 1; padding: 10px 8px; text-align: center;
+      font-size: 13px; font-weight: 600; color: var(--hint);
+      border: none; background: transparent; border-radius: 8px; cursor: pointer;
+      transition: background var(--transition), color var(--transition);
+    }
+    .tab-pill.active {
+      background: var(--bg2); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-weight: 700;
+    }
+
+    /* ── PIN input ──────────────────────────────────────────────────────── */
     .pin-wrap { display: flex; gap: 14px; justify-content: center; padding: 8px 0; }
     .pin-dot {
       width: 18px; height: 18px; border-radius: 50%;
-      border: 2px solid var(--hint);
-      transition: background var(--transition), border-color var(--transition);
+      border: 2px solid var(--hint); background: transparent;
+      transition: all .15s ease;
     }
-    .pin-dot.filled { background: var(--button); border-color: var(--button); }
-    .pin-input-hidden {
-      position: absolute; opacity: 0; pointer-events: none; width: 0; height: 0;
+    .pin-dot.filled {
+      background: var(--button); border-color: var(--button); transform: scale(1.15);
     }
     .pin-tap-area {
-      padding: 10px 0 6px;
-      cursor: text;
-      border-radius: var(--radius-sm);
-      background: var(--bg2); border: 1.5px solid transparent;
-      transition: border-color var(--transition);
-      display: flex; flex-direction: column; align-items: center; gap: 10px;
+      background: var(--bg2); border: 1.5px solid var(--glass-border);
+      border-radius: var(--radius-sm); padding: 14px; text-align: center; cursor: pointer;
     }
-    .pin-tap-area.focused { border-color: var(--button); }
-    .pin-label { font-size: 13px; color: var(--hint); }
+    .pin-tap-area:focus, .pin-tap-area.focused { border-color: var(--button); }
+    .pin-input-hidden {
+      position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px;
+    }
 
-    /* ── Buttons ─────────────────────────────────────────────────────────── */
-    .btn {
-      width: 100%; padding: 15px; border: none; border-radius: var(--radius-sm);
-      font-size: 16px; font-weight: 600; cursor: pointer;
-      background: var(--button); color: var(--btn-text);
-      transition: opacity var(--transition), transform 50ms;
-      font-family: inherit;
-    }
-    .btn:active { transform: scale(.98); }
-    .btn:disabled { opacity: .45; pointer-events: none; }
-    .btn.ghost {
-      background: color-mix(in srgb, var(--button) 12%, transparent);
-      color: var(--button);
-    }
-    .btn.danger {
-      background: color-mix(in srgb, var(--destructive) 12%, transparent);
-      color: var(--destructive);
-    }
-    .btn-row { display: flex; gap: 10px; }
-    .btn-row .btn { flex: 1; }
-
-    /* ── Auth screens ────────────────────────────────────────────────────── */
-    .auth-wrap {
-      flex: 1; display: flex; flex-direction: column;
-      padding: 28px 20px 0;
-    }
-    .auth-logo {
-      width: 72px; height: 72px; border-radius: 20px;
-      background: linear-gradient(135deg, var(--button), color-mix(in srgb, var(--button) 55%, #000));
-      font-size: 36px; display: flex; align-items: center; justify-content: center;
-      margin-bottom: 20px; box-shadow: 0 8px 24px color-mix(in srgb, var(--button) 30%, transparent);
-    }
-    .auth-title { font-size: 26px; font-weight: 700; letter-spacing: -.4px; margin-bottom: 6px; }
-    .auth-sub   { font-size: 14px; color: var(--hint); margin-bottom: 28px; line-height: 1.5; }
-    .form-gap   { height: 16px; }
-    .auth-link  { text-align: center; padding: 20px 0; font-size: 14px; color: var(--hint); }
-    .auth-link a { color: var(--link); text-decoration: none; font-weight: 500; }
-
-    /* ── Empty state ─────────────────────────────────────────────────────── */
-    .empty-state {
-      flex: 1; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; padding: 40px 24px;
-      text-align: center; gap: 12px;
-    }
-    .empty-icon { font-size: 56px; }
-    .empty-title { font-size: 18px; font-weight: 700; }
-    .empty-desc  { font-size: 14px; color: var(--hint); line-height: 1.5; }
-
-    /* ── Spinner ─────────────────────────────────────────────────────────── */
-    .spinner {
-      width: 36px; height: 36px; border-radius: 50%;
-      border: 3px solid color-mix(in srgb, var(--button) 25%, transparent);
-      border-top-color: var(--button);
-      animation: spin .7s linear infinite;
-    }
-    .loading-screen {
-      flex: 1; display: flex; align-items: center; justify-content: center;
-      flex-direction: column; gap: 16px; min-height: 100vh;
-    }
-    .loading-text { font-size: 14px; color: var(--hint); }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Toast ───────────────────────────────────────────────────────────── */
-    #toast {
-      position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%) translateY(20px);
-      background: color-mix(in srgb, var(--text) 88%, transparent);
-      color: var(--bg); padding: 10px 20px; border-radius: 24px;
-      font-size: 14px; font-weight: 500; opacity: 0;
-      transition: opacity .2s, transform .2s; pointer-events: none; z-index: 999;
-      max-width: 80vw; text-align: center;
-    }
-    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-
-    /* ── Bottom nav ──────────────────────────────────────────────────────── */
+    /* ── Bottom Nav ─────────────────────────────────────────────────────── */
     .bottom-nav {
       position: fixed; bottom: 0; left: 0; right: 0;
-      display: none; /* shown after login */
-      background: var(--bg2);
-      border-top: 1px solid color-mix(in srgb, var(--hint) 20%, transparent);
-      padding: 8px 0 max(env(safe-area-inset-bottom), 8px);
-      z-index: 100;
+      height: calc(60px + env(safe-area-inset-bottom, 0px));
+      background: rgba(28, 28, 30, 0.92);
+      backdrop-filter: blur(20px) saturate(180%);
+      border-top: 1px solid var(--glass-border);
+      display: none; align-items: stretch; z-index: 50;
     }
     .bottom-nav.visible { display: flex; }
     .nav-item {
-      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
-      padding: 4px 0;
-      font-size: 11px; color: var(--hint); font-weight: 500;
-      cursor: pointer; transition: color var(--transition);
-      -webkit-tap-highlight-color: transparent;
+      flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 3px; cursor: pointer; padding-bottom: env(safe-area-inset-bottom, 0px);
+      border: none; background: transparent; color: var(--hint); font-size: 11px; font-weight: 500;
     }
-    .nav-item .nav-icon { font-size: 22px; transition: transform .15s; }
-    .nav-item.active { color: var(--button); }
-    .nav-item.active .nav-icon { transform: scale(1.1); }
+    .nav-item.active { color: var(--button); font-weight: 700; }
+    .nav-icon { font-size: 20px; line-height: 1; }
 
-    /* ── Profile ─────────────────────────────────────────────────────────── */
-    .profile-avatar {
-      width: 80px; height: 80px; border-radius: 24px;
-      background: linear-gradient(135deg, var(--button), color-mix(in srgb, var(--button) 55%, #000));
-      font-size: 36px; display: flex; align-items: center; justify-content: center;
-      margin: 24px auto 16px; box-shadow: 0 8px 20px color-mix(in srgb, var(--button) 25%, transparent);
+    /* ── Modals & sheets ────────────────────────────────────────────────── */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(4px); z-index: 100;
+      display: none; align-items: flex-end; justify-content: center;
     }
-    .profile-name { text-align: center; font-size: 20px; font-weight: 700; margin-bottom: 4px; }
-    .profile-sub  { text-align: center; font-size: 13px; color: var(--hint); margin-bottom: 24px; }
-
-    /* ── Section label ───────────────────────────────────────────────────── */
-    .section-label {
-      padding: 14px 16px 6px;
-      font-size: 12px; font-weight: 600;
-      color: var(--hint); text-transform: uppercase; letter-spacing: .5px;
-    }
-
-    /* ── Add account form floating ───────────────────────────────────────── */
-    .add-form-wrap {
-      background: var(--bg2); border-radius: var(--radius) var(--radius) 0 0;
-      padding: 16px 16px 0; margin-top: 16px;
-    }
-    .add-form-title {
-      font-size: 16px; font-weight: 700; margin-bottom: 14px;
-      display: flex; align-items: center; gap: 8px;
-    }
-
-    /* ── Delete confirm overlay ──────────────────────────────────────────── */
-    #confirm-overlay {
-      display: none; position: fixed; inset: 0;
-      background: color-mix(in srgb, #000 55%, transparent);
-      z-index: 200; align-items: flex-end; justify-content: center;
-    }
-    #confirm-overlay.show { display: flex; }
-    .confirm-sheet {
-      background: var(--bg); border-radius: var(--radius) var(--radius) 0 0;
-      width: 100%; max-width: 520px; padding: 20px 20px max(env(safe-area-inset-bottom), 20px);
-      animation: slideUp .22s ease;
+    .modal-overlay.show { display: flex; }
+    .modal-sheet {
+      background: var(--bg2); border-radius: 20px 20px 0 0;
+      border: 1px solid var(--glass-border); border-bottom: none;
+      width: 100%; max-width: 500px; padding: 22px 20px calc(24px + env(safe-area-inset-bottom, 0px));
+      animation: slideUp .22s cubic-bezier(.4,0,.2,1); max-height: 90vh; overflow-y: auto;
     }
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: none; } }
-    .confirm-sheet h2 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
-    .confirm-sheet p  { font-size: 14px; color: var(--hint); margin-bottom: 20px; }
+    .modal-sheet h2 { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+    .modal-sheet p { font-size: 14px; color: var(--hint); margin-bottom: 18px; line-height: 1.4; }
+    .modal-btn-row { display: flex; gap: 10px; margin-top: 16px; }
+    .modal-btn-row .btn { flex: 1; }
 
-    /* ── Edit overlay ────────────────────────────────────────────────────── */
-    #edit-overlay {
-      display: none; position: fixed; inset: 0;
-      background: color-mix(in srgb, #000 55%, transparent);
-      z-index: 200; align-items: flex-end; justify-content: center;
+    /* ── Camera Scanner Modal ───────────────────────────────────────────── */
+    #camera-scanner-modal {
+      display: none;
+      position: fixed; inset: 0; z-index: 1000;
+      background: #000; color: #fff;
+      flex-direction: column; overflow: hidden;
     }
-    #edit-overlay.show { display: flex; }
-    .edit-sheet {
-      background: var(--bg); border-radius: var(--radius) var(--radius) 0 0;
-      width: 100%; max-width: 520px; padding: 20px 20px max(env(safe-area-inset-bottom), 20px);
-      animation: slideUp .22s ease;
+    #camera-scanner-modal.show { display: flex; }
+    .camera-corner {
+      position: absolute; width: 30px; height: 30px; border-color: var(--button); border-style: solid;
     }
-    .edit-sheet h2 { font-size: 18px; font-weight: 700; margin-bottom: 16px; }
+    .camera-corner.tl { top: -2px; left: -2px; border-width: 4px 0 0 4px; border-top-left-radius: 14px; }
+    .camera-corner.tr { top: -2px; right: -2px; border-width: 4px 4px 0 0; border-top-right-radius: 14px; }
+    .camera-corner.bl { bottom: -2px; left: -2px; border-width: 0 0 4px 4px; border-bottom-left-radius: 14px; }
+    .camera-corner.br { bottom: -2px; right: -2px; border-width: 0 4px 4px 0; border-bottom-right-radius: 14px; }
+
+    /* ── Toast ──────────────────────────────────────────────────────────── */
+    #toast {
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%) translateY(-60px);
+      background: rgba(30, 30, 32, 0.95); backdrop-filter: blur(14px);
+      border: 1px solid var(--glass-border); color: #fff;
+      padding: 10px 18px; border-radius: 24px; font-size: 14px; font-weight: 600;
+      z-index: 200; pointer-events: none; opacity: 0; transition: all .25s ease;
+      white-space: nowrap; max-width: 90vw; overflow: hidden; text-overflow: ellipsis;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* ── Spinners & loaders ─────────────────────────────────────────────── */
+    .spinner {
+      width: 32px; height: 32px; border-radius: 50%;
+      border: 3px solid rgba(255, 255, 255, 0.1);
+      border-top-color: var(--button); animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-center {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 80vh; gap: 14px; text-align: center;
+    }
   </style>
 </head>
 <body>
 
 <!-- ── Loading screen ──────────────────────────────────────────────── -->
 <div id="screen-loading" class="screen active">
-  <div class="loading-screen">
+  <div class="loading-center">
     <div class="spinner"></div>
-    <div class="loading-text">Loading CheckFlow…</div>
+    <div style="font-size: 14px; color: var(--hint)">Connecting CheckFlow ET…</div>
   </div>
 </div>
 
-<!-- ── Register screen ────────────────────────────────────────────── -->
+<!-- ── Register screen (Admin Sign Up) ────────────────────────────── -->
 <div id="screen-register" class="screen">
-  <div class="auth-wrap">
-    <div class="auth-logo">✅</div>
-    <div class="auth-title">Create Account</div>
-    <div class="auth-sub">Register your business to start verifying payments.</div>
+  <div style="padding: 28px 16px 20px; text-align: center;">
+    <div style="font-size: 40px; margin-bottom: 8px;">🏢</div>
+    <h1 style="font-size: 24px; font-weight: 800;">Business Owner Sign Up</h1>
+    <p style="font-size: 14px; color: var(--hint); margin-top: 4px;">
+      Create an account to configure receiving accounts & cashiers.
+    </p>
+  </div>
 
+  <div class="card" style="padding: 18px 16px;">
     <label>Full Name <span class="req">*</span></label>
-    <input id="reg-name" type="text" autocomplete="name" placeholder="Abebe Girma" />
+    <input id="reg-name" type="text" autocomplete="name" placeholder="Dawit Haile" />
     <div id="reg-name-err" class="field-error"></div>
     <div class="form-gap"></div>
 
     <label>Phone Number <span class="req">*</span></label>
     <div style="display:flex;gap:8px">
       <input id="reg-phone" type="tel" placeholder="0912345678" style="flex:1" autocomplete="tel" />
-      <button class="btn ghost" style="width:auto;padding:14px 12px;font-size:20px" id="share-phone-btn" title="Use my Telegram phone">📱</button>
+      <button class="btn ghost" style="width:auto;padding:12px 14px;font-size:18px" id="share-phone-btn" title="Use Telegram Phone">📱</button>
     </div>
     <div id="reg-phone-err" class="field-error"></div>
-    <div class="form-hint">Tap 📱 to share your Telegram number.</div>
+    <div class="form-hint">Accepts 09..., 07..., or +2519...</div>
+    <div class="form-gap"></div>
+
+    <label>Account Type <span class="req">*</span></label>
+    <select id="reg-type">
+      <option value="BUSINESS">Business (Shop, Merchant, Company)</option>
+      <option value="PERSONAL">Personal</option>
+    </select>
     <div class="form-gap"></div>
 
     <label>4-Digit PIN <span class="req">*</span></label>
     <div class="pin-tap-area" id="reg-pin-area" tabindex="0">
-      <div class="pin-label">Tap to enter PIN</div>
+      <div style="font-size: 12px; color: var(--hint); margin-bottom: 4px;">Tap to enter 4-digit PIN</div>
       <div class="pin-wrap" id="reg-pin-dots"></div>
     </div>
     <input id="reg-pin-input" class="pin-input-hidden" type="number" inputmode="numeric" maxlength="4" />
@@ -359,7 +336,7 @@
 
     <label>Confirm PIN <span class="req">*</span></label>
     <div class="pin-tap-area" id="reg-pin2-area" tabindex="0">
-      <div class="pin-label">Tap to confirm PIN</div>
+      <div style="font-size: 12px; color: var(--hint); margin-bottom: 4px;">Tap to re-enter PIN</div>
       <div class="pin-wrap" id="reg-pin2-dots"></div>
     </div>
     <input id="reg-pin2-input" class="pin-input-hidden" type="number" inputmode="numeric" maxlength="4" />
@@ -367,17 +344,30 @@
     <div class="form-gap"></div>
 
     <button class="btn" id="reg-submit-btn" onclick="submitRegister()">Create Account</button>
-    <div class="auth-link">Already have an account? <a href="#" onclick="showScreen('login');return false">Log in</a></div>
+    <div style="text-align: center; margin-top: 14px; font-size: 13px; color: var(--hint);">
+      Already have an account? <a href="#" onclick="showScreen('login');return false" style="color: var(--link); text-decoration: none; font-weight: 600;">Sign in</a>
+    </div>
   </div>
 </div>
 
-<!-- ── Login screen ───────────────────────────────────────────────── -->
+<!-- ── Login screen (Admin & Cashier) ─────────────────────────────── -->
 <div id="screen-login" class="screen">
-  <div class="auth-wrap">
-    <div class="auth-logo">🔐</div>
-    <div class="auth-title">Welcome Back</div>
-    <div class="auth-sub">Log in to manage your accounts.</div>
+  <div style="padding: 28px 16px 16px; text-align: center;">
+    <div style="font-size: 40px; margin-bottom: 8px;">🔐</div>
+    <h1 style="font-size: 24px; font-weight: 800;">Sign In</h1>
+    <p style="font-size: 14px; color: var(--hint); margin-top: 4px;">
+      Choose your role to continue
+    </p>
+  </div>
 
+  <!-- Role Toggle -->
+  <div class="tab-pills">
+    <button id="login-tab-admin" class="tab-pill active" onclick="switchLoginMode('admin')">Admin (Business Owner)</button>
+    <button id="login-tab-cashier" class="tab-pill" onclick="switchLoginMode('cashier')">Cashier (Staff)</button>
+  </div>
+
+  <!-- Admin Form -->
+  <div id="login-form-admin" class="card" style="padding: 18px 16px;">
     <label>Phone Number <span class="req">*</span></label>
     <input id="login-phone" type="tel" placeholder="0912345678" autocomplete="tel" />
     <div id="login-phone-err" class="field-error"></div>
@@ -385,81 +375,272 @@
 
     <label>4-Digit PIN <span class="req">*</span></label>
     <div class="pin-tap-area" id="login-pin-area" tabindex="0">
-      <div class="pin-label">Tap to enter PIN</div>
+      <div style="font-size: 12px; color: var(--hint); margin-bottom: 4px;">Tap to enter 4-digit PIN</div>
       <div class="pin-wrap" id="login-pin-dots"></div>
     </div>
     <input id="login-pin-input" class="pin-input-hidden" type="number" inputmode="numeric" maxlength="4" />
     <div id="login-pin-err" class="field-error"></div>
     <div class="form-gap"></div>
 
-    <button class="btn" id="login-submit-btn" onclick="submitLogin()">Log In</button>
-    <div class="auth-link">No account? <a href="#" onclick="showScreen('register');return false">Create one</a></div>
+    <button class="btn" id="login-admin-btn" onclick="submitAdminLogin()">Sign In as Admin</button>
+    <div style="text-align: center; margin-top: 14px; font-size: 13px; color: var(--hint);">
+      New business owner? <a href="#" onclick="showScreen('register');return false" style="color: var(--link); text-decoration: none; font-weight: 600;">Create account</a>
+    </div>
+  </div>
+
+  <!-- Cashier Form (Password Only) -->
+  <div id="login-form-cashier" class="card" style="display: none; padding: 18px 16px;">
+    <div style="background: rgba(48, 209, 88, 0.1); border: 1px solid rgba(48, 209, 88, 0.25); border-radius: 10px; padding: 12px; margin-bottom: 16px;">
+      <p style="font-size: 13px; color: #30d158; font-weight: 500;">
+        Staff members enter only their branch password provided by the business admin.
+      </p>
+    </div>
+
+    <label>Cashier Password <span class="req">*</span></label>
+    <input id="login-cashier-pwd" type="password" placeholder="Enter your cashier password" />
+    <div id="login-cashier-pwd-err" class="field-error"></div>
+    <div class="form-gap"></div>
+
+    <button class="btn" id="login-cashier-btn" onclick="submitCashierLogin()" style="background: #30d158; color: #000;">
+      Sign In as Cashier
+    </button>
   </div>
 </div>
 
-<!-- ── Accounts screen ─────────────────────────────────────────────── -->
+<!-- ── Screen: Admin Home Dashboard ────────────────────────────────── -->
+<div id="screen-home" class="screen">
+  <div class="header">
+    <div class="header-logo">⚡</div>
+    <div class="header-title-box">
+      <h1 id="home-org-name">Business Dashboard</h1>
+      <p id="home-greeting">Welcome back</p>
+    </div>
+    <span class="badge active" id="home-role-badge">ADMIN</span>
+  </div>
+
+  <div style="padding: 16px 12px 4px;">
+    <!-- Stats card -->
+    <div class="card" style="background: linear-gradient(135deg, rgba(10, 132, 255, 0.15) 0%, rgba(94, 92, 230, 0.15) 100%); padding: 18px 14px; margin: 0 0 16px;">
+      <div style="display: flex; justify-content: space-around; text-align: center;">
+        <div style="cursor: pointer;" onclick="navTo('accounts')">
+          <div id="home-stat-accounts" style="font-size: 24px; font-weight: 800; color: #0a84ff;">0</div>
+          <div style="font-size: 12px; color: var(--hint); margin-top: 2px;">Receiving Accounts</div>
+        </div>
+        <div style="width: 1px; background: var(--glass-border);"></div>
+        <div style="cursor: pointer;" onclick="navTo('cashiers')">
+          <div id="home-stat-cashiers" style="font-size: 24px; font-weight: 800; color: #30d158;">0</div>
+          <div style="font-size: 12px; color: var(--hint); margin-top: 2px;">Active Cashiers</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4 Main Action Buttons -->
+    <p class="section-label" style="padding-left: 4px;">Main Menu</p>
+
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <!-- Verify Payment -->
+      <div class="card" onclick="navTo('verify')" style="margin: 0; padding: 18px; display: flex; align-items: center; gap: 14px; cursor: pointer; border-color: rgba(255, 214, 10, 0.3); background: rgba(255, 214, 10, 0.05);">
+        <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(255, 214, 10, 0.2); display: flex; align-items: center; justify-content: center; font-size: 22px;">⚡</div>
+        <div style="flex: 1;">
+          <strong style="font-size: 16px; display: block; color: #ffd60a;">Verify Payment</strong>
+          <span style="font-size: 13px; color: var(--hint);">Check CBE / Telebirr receipts against fraud</span>
+        </div>
+        <div style="font-size: 18px; color: var(--hint);">→</div>
+      </div>
+
+      <!-- Receiving Accounts -->
+      <div class="card" onclick="navTo('accounts')" style="margin: 0; padding: 18px; display: flex; align-items: center; gap: 14px; cursor: pointer; border-color: rgba(10, 132, 255, 0.3); background: rgba(10, 132, 255, 0.05);">
+        <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(10, 132, 255, 0.2); display: flex; align-items: center; justify-content: center; font-size: 22px;">🏦</div>
+        <div style="flex: 1;">
+          <strong style="font-size: 16px; display: block; color: #0a84ff;">Receiving Accounts</strong>
+          <span style="font-size: 13px; color: var(--hint);">Setup CBE accounts & Telebirr numbers</span>
+        </div>
+        <div style="font-size: 18px; color: var(--hint);">→</div>
+      </div>
+
+      <!-- Cashiers -->
+      <div class="card" onclick="navTo('cashiers')" style="margin: 0; padding: 18px; display: flex; align-items: center; gap: 14px; cursor: pointer; border-color: rgba(48, 209, 88, 0.3); background: rgba(48, 209, 88, 0.05);">
+        <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(48, 209, 88, 0.2); display: flex; align-items: center; justify-content: center; font-size: 22px;">👥</div>
+        <div style="flex: 1;">
+          <strong style="font-size: 16px; display: block; color: #30d158;">Cashiers</strong>
+          <span style="font-size: 13px; color: var(--hint);">Create and manage staff logins</span>
+        </div>
+        <div style="font-size: 18px; color: var(--hint);">→</div>
+      </div>
+
+      <!-- Profile -->
+      <div class="card" onclick="navTo('profile')" style="margin: 0; padding: 18px; display: flex; align-items: center; gap: 14px; cursor: pointer; border-color: rgba(175, 82, 222, 0.3); background: rgba(175, 82, 222, 0.05);">
+        <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(175, 82, 222, 0.2); display: flex; align-items: center; justify-content: center; font-size: 22px;">👤</div>
+        <div style="flex: 1;">
+          <strong style="font-size: 16px; display: block; color: #bf5af2;">Profile & Settings</strong>
+          <span style="font-size: 13px; color: var(--hint);">Business details, branch info, sign out</span>
+        </div>
+        <div style="font-size: 18px; color: var(--hint);">→</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Screen: Verify Payment (Admin & Cashier) ────────────────────── -->
+<div id="screen-verify" class="screen">
+  <div class="header">
+    <div class="header-logo" style="background: linear-gradient(135deg, #ffd60a, #ff9f0a); color: #000;">⚡</div>
+    <div class="header-title-box">
+      <h1>Verify Payment</h1>
+      <p id="verify-cashier-label">Checking receipts against fraud</p>
+    </div>
+  </div>
+
+  <!-- Verification Input Mode Pills -->
+  <div class="tab-pills" style="margin-top: 14px;">
+    <button id="vtab-scan" class="tab-pill active" onclick="switchVerifyTab('scan', true)">📷 Scan Receipt</button>
+    <button id="vtab-image" class="tab-pill" onclick="switchVerifyTab('image')">📁 Upload Image</button>
+    <button id="vtab-manual" class="tab-pill" onclick="switchVerifyTab('manual')">✍️ Manual</button>
+  </div>
+
+  <!-- Scan Mode Hero Card -->
+  <div id="vform-scan" class="card" style="padding: 24px 18px; text-align: center;">
+    <div style="width: 60px; height: 60px; border-radius: 50%; background: rgba(10, 132, 255, 0.2); color: var(--button); display: flex; align-items: center; justify-content: center; font-size: 30px; margin: 0 auto 12px;">📷</div>
+    <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 6px;">Live Receipt Scanner</h2>
+    <p style="font-size: 13px; color: var(--hint); margin-bottom: 16px; max-width: 280px; margin-left: auto; margin-right: auto;">Point your phone camera at a printed receipt or customer screen to verify in seconds.</p>
+
+    <label style="text-align: left; display: block; margin-bottom: 6px; font-size: 13px; font-weight: 600;">Bank / Provider</label>
+    <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+      <button id="vscan-prov-cbe" type="button" class="btn" style="flex: 1; padding: 10px; font-size: 13px; background: rgba(10, 132, 255, 0.2); border: 2px solid var(--button);" onclick="selectMiniappProvider('CBE')">🏦 CBE Bank</button>
+      <button id="vscan-prov-telebirr" type="button" class="btn ghost" style="flex: 1; padding: 10px; font-size: 13px; border: 1px solid var(--glass-border);" onclick="selectMiniappProvider('TELEBIRR')">📱 Telebirr</button>
+    </div>
+
+    <button class="btn" onclick="openCameraScanner()" style="display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; font-size: 15px; font-weight: 700;">
+      <span>📷</span> Open Camera Scanner
+    </button>
+  </div>
+
+  <!-- Manual Mode Form -->
+  <div id="vform-manual" class="card" style="display: none; padding: 16px;">
+    <label>Bank / Provider</label>
+    <select id="vmanual-provider">
+      <option value="CBE">Commercial Bank of Ethiopia (CBE)</option>
+      <option value="TELEBIRR">Telebirr</option>
+      <option value="BOA">Bank of Abyssinia (BOA)</option>
+    </select>
+    <div class="form-gap"></div>
+
+    <label>Transaction Reference <span class="req">*</span></label>
+    <input id="vmanual-ref" type="text" placeholder="e.g. FT2301290349 or 1000..." />
+    <div class="form-gap"></div>
+
+    <label>Expected Amount (ETB) <span class="req">*</span></label>
+    <input id="vmanual-amount" type="number" step="0.01" placeholder="e.g. 1500.00" />
+    <div class="form-gap"></div>
+
+    <button class="btn" id="vmanual-btn" onclick="submitVerifyManual()">⚡ Verify Payment</button>
+  </div>
+
+  <!-- Image Upload Mode Form -->
+  <div id="vform-image" class="card" style="display: none; padding: 16px;">
+    <label>Bank / Provider</label>
+    <div style="display: flex; gap: 8px; margin-bottom: 14px;">
+      <button id="vimg-prov-cbe" type="button" class="btn" style="flex: 1; padding: 10px; font-size: 13px; background: rgba(10, 132, 255, 0.2); border: 2px solid var(--button);" onclick="selectMiniappProvider('CBE')">🏦 CBE Bank</button>
+      <button id="vimg-prov-telebirr" type="button" class="btn ghost" style="flex: 1; padding: 10px; font-size: 13px; border: 1px solid var(--glass-border);" onclick="selectMiniappProvider('TELEBIRR')">📱 Telebirr</button>
+    </div>
+
+    <label>Upload Screenshot or Photo <span class="req">*</span></label>
+    <input id="vimage-file" type="file" accept="image/*,application/pdf" />
+    <div class="form-gap"></div>
+    <button class="btn" id="vimage-btn" onclick="submitVerifyImage()">⚡ Scan & Verify Image</button>
+  </div>
+
+  <!-- Verification Result Display -->
+  <div id="vresult-card" class="card" style="display: none; margin-top: 14px; padding: 18px; border-width: 2px;">
+    <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 14px;">
+      <div id="vresult-icon" style="width: 48px; height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center; font-size: 26px;"></div>
+      <div>
+        <h2 id="vresult-title" style="font-size: 18px; font-weight: 800;"></h2>
+        <p id="vresult-desc" style="font-size: 13px; color: var(--hint); margin-top: 2px;"></p>
+      </div>
+    </div>
+
+    <!-- Blurry/Unreadable Hint Banner -->
+    <div id="vresult-hint" style="display: none; background: rgba(255, 214, 10, 0.15); border: 1px solid rgba(255, 214, 10, 0.3); border-radius: 10px; padding: 10px 12px; margin: 10px 0 14px; font-size: 12px; color: #ffd60a;">
+      💡 <strong>Tip:</strong> Hold steady, use good light, and fill the frame.
+    </div>
+
+    <div id="vresult-details" style="font-size: 14px; display: flex; flex-direction: column; gap: 8px;"></div>
+
+    <button class="btn" onclick="openCameraScanner()" style="margin-top: 16px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;">
+      <span>📷</span> Scan Another Receipt
+    </button>
+  </div>
+</div>
+
+<!-- ── Screen: Receiving Accounts (Admin Only) ─────────────────────── -->
 <div id="screen-accounts" class="screen">
   <div class="header">
     <div class="header-logo">🏦</div>
-    <div>
-      <h1>Accounts</h1>
-      <p>Receiving bank accounts</p>
+    <div class="header-title-box">
+      <h1>Receiving Accounts</h1>
+      <p>Grouped by bank (CBE & Telebirr)</p>
+    </div>
+    <button class="btn" onclick="openAddAccountModal()" style="width: auto; padding: 8px 14px; font-size: 13px;">+ Add</button>
+  </div>
+
+  <div id="accounts-list" style="margin-top: 10px;"></div>
+</div>
+
+<!-- ── Screen: Cashiers Management (Admin Only) ────────────────────── -->
+<div id="screen-cashiers" class="screen">
+  <div class="header">
+    <div class="header-logo" style="background: linear-gradient(135deg, #30d158, #0a84ff);">👥</div>
+    <div class="header-title-box">
+      <h1>Cashiers</h1>
+      <p>Staff who check payments</p>
+    </div>
+    <button class="btn" onclick="openAddCashierModal()" style="width: auto; padding: 8px 14px; font-size: 13px; background: #30d158; color: #000;">+ Cashier</button>
+  </div>
+
+  <div id="cashiers-list" style="margin-top: 10px;"></div>
+</div>
+
+<!-- ── Screen: Profile & Settings ──────────────────────────────────── -->
+<div id="screen-profile" class="screen">
+  <div class="header">
+    <div class="header-logo" style="background: linear-gradient(135deg, #bf5af2, #5e5ce6);">👤</div>
+    <div class="header-title-box">
+      <h1>Profile</h1>
+      <p id="pf-role-subtitle">Account Details</p>
     </div>
   </div>
 
-  <div id="accounts-list"></div>
-
-  <!-- Add account form -->
-  <div class="add-form-wrap">
-    <div class="add-form-title">➕ Add Account</div>
-
-    <label>Provider</label>
-    <select id="add-bank">
-      <option value="CBE">CBE (Commercial Bank of Ethiopia)</option>
-      <option value="TELEBIRR">Telebirr</option>
-      <option value="BOA">BOA (Bank of Abyssinia)</option>
-      <option value="AWASH">Awash Bank</option>
-    </select>
-    <div class="form-gap" style="height:10px"></div>
-
-    <label>Account Number <span class="req">*</span></label>
-    <input id="add-number" type="text" inputmode="numeric" placeholder="Account / phone number" />
-    <div id="add-number-err" class="field-error"></div>
-    <div class="form-gap" style="height:10px"></div>
-
-    <label>Account Holder Name <span class="req">*</span></label>
-    <input id="add-holder" type="text" placeholder="Name on account" />
-    <div id="add-holder-err" class="field-error"></div>
-    <div class="form-gap" style="height:10px"></div>
-
-    <button class="btn" onclick="submitAddAccount()">Add Account</button>
-    <div class="form-gap"></div>
+  <div style="padding: 20px 14px 10px; text-align: center;">
+    <div id="pf-avatar" style="width: 72px; height: 72px; border-radius: 50%; background: linear-gradient(135deg, #0a84ff, #5e5ce6); color: #fff; font-size: 28px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin: 0 auto 10px; box-shadow: 0 4px 16px rgba(10,132,255,0.4);">?</div>
+    <h2 id="profile-name" style="font-size: 20px; font-weight: 800;">—</h2>
+    <span id="profile-role-badge" class="badge active" style="margin-top: 6px; display: inline-block;">—</span>
   </div>
-</div>
 
-<!-- ── Profile screen ──────────────────────────────────────────────── -->
-<div id="screen-profile" class="screen">
-  <div class="profile-avatar">👤</div>
-  <div id="profile-name" class="profile-name">—</div>
-  <div id="profile-sub"  class="profile-sub">—</div>
-
-  <div class="section-label">Account Info</div>
   <div class="card">
-    <div class="card-row no-tap">
+    <div class="card-row no-tap" id="pf-row-org">
+      <div class="row-icon blue">🏢</div>
+      <div class="row-body"><strong>Business</strong><span id="pf-org">—</span></div>
+    </div>
+    <div class="card-row no-tap" id="pf-row-branch">
+      <div class="row-icon blue">📍</div>
+      <div class="row-body"><strong>Branch</strong><span id="pf-branch">—</span></div>
+    </div>
+    <div class="card-row no-tap" id="pf-row-phone">
       <div class="row-icon blue">📞</div>
       <div class="row-body"><strong>Phone</strong><span id="pf-phone">—</span></div>
     </div>
-    <div class="card-row no-tap">
-      <div class="row-icon blue">🏢</div>
-      <div class="row-body"><strong>Organization</strong><span id="pf-org">—</span></div>
+    <div class="card-row no-tap" id="pf-row-type">
+      <div class="row-icon blue">🏷️</div>
+      <div class="row-body"><strong>Account Type</strong><span id="pf-type">—</span></div>
     </div>
-    <div class="card-row no-tap">
-      <div class="row-icon blue">👔</div>
-      <div class="row-body"><strong>Role</strong><span id="pf-role">—</span></div>
-    </div>
-    <div class="card-row no-tap">
+    <div class="card-row no-tap" id="pf-row-accounts">
       <div class="row-icon green">🏦</div>
-      <div class="row-body"><strong>Accounts</strong><span id="pf-accounts">—</span></div>
+      <div class="row-body"><strong>Receiving Accounts</strong><span id="pf-accounts">—</span></div>
+    </div>
+    <div class="card-row no-tap" id="pf-row-cashiers">
+      <div class="row-icon green">👥</div>
+      <div class="row-body"><strong>Active Cashiers</strong><span id="pf-cashiers">—</span></div>
     </div>
     <div class="card-row no-tap">
       <div class="row-icon green" id="pf-tg-icon">📱</div>
@@ -467,43 +648,211 @@
     </div>
   </div>
 
-  <div style="padding:0 12px">
-    <button class="btn danger" onclick="logout()">Log Out</button>
+  <div style="padding: 10px 14px 20px;">
+    <button class="btn danger" onclick="logout()">Sign Out</button>
+  </div>
+</div>
+
+<!-- ── Admin Only Guard Screen ────────────────────────────────────── -->
+<div id="screen-forbidden" class="screen">
+  <div class="loading-center" style="padding: 40px 20px;">
+    <div style="font-size: 54px; margin-bottom: 12px;">🔒</div>
+    <h2 style="font-size: 20px; font-weight: 800; margin-bottom: 8px;">Admins Only</h2>
+    <p style="font-size: 14px; color: var(--hint); max-width: 320px; line-height: 1.5; margin-bottom: 24px;">
+      This section is for business admins only. Staff cashiers can verify payments and see their profile.
+    </p>
+    <button class="btn" onclick="navTo('verify')" style="max-width: 220px;">Go to Verify Payment</button>
   </div>
 </div>
 
 <!-- ── Bottom Nav ──────────────────────────────────────────────────── -->
 <nav class="bottom-nav" id="bottom-nav">
-  <div class="nav-item active" id="nav-accounts" onclick="navTo('accounts')">
+  <button class="nav-item active" id="nav-home" onclick="navTo('home')">
+    <span class="nav-icon">🏠</span>Home
+  </button>
+  <button class="nav-item" id="nav-verify" onclick="navTo('verify')">
+    <span class="nav-icon">⚡</span>Verify
+  </button>
+  <button class="nav-item" id="nav-accounts" onclick="navTo('accounts')">
     <span class="nav-icon">🏦</span>Accounts
-  </div>
-  <div class="nav-item" id="nav-profile" onclick="navTo('profile')">
+  </button>
+  <button class="nav-item" id="nav-cashiers" onclick="navTo('cashiers')">
+    <span class="nav-icon">👥</span>Cashiers
+  </button>
+  <button class="nav-item" id="nav-profile" onclick="navTo('profile')">
     <span class="nav-icon">👤</span>Profile
-  </div>
+  </button>
 </nav>
 
-<!-- ── Delete confirm sheet ────────────────────────────────────────── -->
-<div id="confirm-overlay" onclick="closeConfirm(event)">
-  <div class="confirm-sheet">
-    <h2>Delete Account?</h2>
-    <p id="confirm-desc">This action cannot be undone.</p>
-    <div class="btn-row">
-      <button class="btn ghost" onclick="closeConfirm()">Cancel</button>
-      <button class="btn danger" id="confirm-ok-btn">Delete</button>
+<!-- ── Modals / Bottom Sheets ──────────────────────────────────────── -->
+
+<!-- Add Receiving Account Modal -->
+<div id="modal-add-account" class="modal-overlay" onclick="closeModalOnBg(event, 'modal-add-account')">
+  <div class="modal-sheet">
+    <h2>Add Receiving Account</h2>
+    <p>Enter your bank details where customers send money.</p>
+
+    <label>Bank <span class="req">*</span></label>
+    <select id="modal-add-bank">
+      <option value="CBE">Commercial Bank of Ethiopia (CBE)</option>
+      <option value="TELEBIRR">Telebirr</option>
+    </select>
+    <div class="form-gap"></div>
+
+    <label>Account Number or Telebirr Phone <span class="req">*</span></label>
+    <input id="modal-add-accnum" type="text" placeholder="1000... (13 digits) or 09..." />
+    <div id="modal-add-accnum-err" class="field-error"></div>
+    <div class="form-gap"></div>
+
+    <label>Account Holder Name <span class="req">*</span></label>
+    <input id="modal-add-holder" type="text" placeholder="Full name registered at bank" />
+    <div id="modal-add-holder-err" class="field-error"></div>
+
+    <div class="modal-btn-row">
+      <button class="btn ghost" onclick="closeModal('modal-add-account')">Cancel</button>
+      <button class="btn" id="modal-add-acc-btn" onclick="submitAddAccountModal()">Save Account</button>
     </div>
   </div>
 </div>
 
-<!-- ── Edit holder name sheet ──────────────────────────────────────── -->
-<div id="edit-overlay" onclick="closeEdit(event)">
-  <div class="edit-sheet">
-    <h2>Edit Holder Name</h2>
-    <input id="edit-holder-input" type="text" placeholder="Account holder name" />
-    <div class="form-gap"></div>
-    <div class="btn-row">
-      <button class="btn ghost" onclick="closeEdit()">Cancel</button>
-      <button class="btn" id="edit-ok-btn">Save</button>
+<!-- Edit Holder Name Modal -->
+<div id="modal-edit-holder" class="modal-overlay" onclick="closeModalOnBg(event, 'modal-edit-holder')">
+  <div class="modal-sheet">
+    <h2>Edit Account Holder Name</h2>
+    <p>Update the official name attached to this account.</p>
+
+    <label>Account Holder Name <span class="req">*</span></label>
+    <input id="modal-edit-holder-input" type="text" placeholder="Updated holder name" />
+    <div id="modal-edit-holder-err" class="field-error"></div>
+
+    <div class="modal-btn-row">
+      <button class="btn ghost" onclick="closeModal('modal-edit-holder')">Cancel</button>
+      <button class="btn" id="modal-edit-holder-btn" onclick="submitEditHolderModal()">Save Changes</button>
     </div>
+  </div>
+</div>
+
+<!-- Add Cashier Modal -->
+<div id="modal-add-cashier" class="modal-overlay" onclick="closeModalOnBg(event, 'modal-add-cashier')">
+  <div class="modal-sheet">
+    <h2>Create Cashier Account</h2>
+    <p>Your cashier will use this password to sign in and check payment receipts.</p>
+
+    <label>Cashier Full Name <span class="req">*</span></label>
+    <input id="modal-add-cashier-name" type="text" placeholder="Almaz Tadesse" />
+    <div id="modal-add-cashier-name-err" class="field-error"></div>
+    <div class="form-gap"></div>
+
+    <label>Password <span class="req">*</span></label>
+    <input id="modal-add-cashier-pwd" type="password" placeholder="Unique password for cashier" />
+    <div id="modal-add-cashier-pwd-err" class="field-error"></div>
+
+    <div class="modal-btn-row">
+      <button class="btn ghost" onclick="closeModal('modal-add-cashier')">Cancel</button>
+      <button class="btn" id="modal-add-cashier-btn" onclick="submitAddCashierModal()" style="background: #30d158; color: #000;">Create Cashier</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit / Reset Cashier Password Modal -->
+<div id="modal-edit-cashier" class="modal-overlay" onclick="closeModalOnBg(event, 'modal-edit-cashier')">
+  <div class="modal-sheet">
+    <h2>Edit Cashier</h2>
+    <p>Update name or set a new password for this staff member.</p>
+
+    <label>Cashier Full Name <span class="req">*</span></label>
+    <input id="modal-edit-cashier-name" type="text" />
+    <div id="modal-edit-cashier-name-err" class="field-error"></div>
+    <div class="form-gap"></div>
+
+    <label>New Password (leave blank to keep current)</label>
+    <input id="modal-edit-cashier-pwd" type="password" placeholder="Enter new password" />
+    <div id="modal-edit-cashier-pwd-err" class="field-error"></div>
+
+    <div class="modal-btn-row">
+      <button class="btn ghost" onclick="closeModal('modal-edit-cashier')">Cancel</button>
+      <button class="btn" id="modal-edit-cashier-btn" onclick="submitEditCashierModal()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Confirmation Sheet -->
+<div id="modal-confirm-delete" class="modal-overlay" onclick="closeModalOnBg(event, 'modal-confirm-delete')">
+  <div class="modal-sheet">
+    <h2 id="modal-confirm-title">Are you sure?</h2>
+    <p id="modal-confirm-desc">This action cannot be undone.</p>
+    <div class="modal-btn-row">
+      <button class="btn ghost" onclick="closeModal('modal-confirm-delete')">Cancel</button>
+      <button class="btn danger" id="modal-confirm-ok-btn">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Fullscreen Camera Scanner Modal -->
+<div id="camera-scanner-modal">
+  <input id="scanner-native-input" type="file" accept="image/*" capture="environment" style="display:none;" onchange="handleScannerNativeFile(event)" />
+  
+  <!-- Top Bar -->
+  <div style="position: absolute; top: 0; left: 0; right: 0; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; z-index: 20; background: linear-gradient(to bottom, rgba(0,0,0,0.85), transparent);">
+    <button onclick="closeCameraScanner()" style="width: 40px; height: 40px; border-radius: 50%; background: rgba(30,30,32,0.8); border: 1px solid rgba(255,255,255,0.2); color: #fff; font-size: 18px; cursor: pointer;">✕</button>
+    <div style="display: flex; gap: 4px; background: rgba(30,30,32,0.85); padding: 3px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.2);">
+      <button id="modal-prov-cbe" type="button" style="padding: 5px 12px; border-radius: 16px; border: none; font-size: 12px; font-weight: 700; background: var(--button); color: #fff; cursor: pointer;" onclick="selectMiniappProvider('CBE')">🏦 CBE</button>
+      <button id="modal-prov-telebirr" type="button" style="padding: 5px 12px; border-radius: 16px; border: none; font-size: 12px; font-weight: 700; background: transparent; color: var(--hint); cursor: pointer;" onclick="selectMiniappProvider('TELEBIRR')">📱 Telebirr</button>
+    </div>
+    <button id="scanner-switch-btn" onclick="switchScannerCamera()" style="width: 40px; height: 40px; border-radius: 50%; background: rgba(30,30,32,0.8); border: 1px solid rgba(255,255,255,0.2); color: #fff; font-size: 18px; cursor: pointer;">🔄</button>
+  </div>
+
+  <!-- Live Camera Viewport -->
+  <div id="scanner-view-camera" style="flex: 1; position: relative; display: flex; align-items: center; justify-content: center; background: #000;">
+    <video id="scanner-video" playsinline autoplay muted style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;"></video>
+    
+    <!-- Viewfinder Frame -->
+    <div id="scanner-frame" style="position: relative; width: 80%; max-width: 320px; aspect-ratio: 3/4; border-radius: 18px; box-shadow: 0 0 0 9999px rgba(0,0,0,0.55); pointer-events: none; z-index: 5; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 16px;">
+      <div class="camera-corner tl"></div>
+      <div class="camera-corner tr"></div>
+      <div class="camera-corner bl"></div>
+      <div class="camera-corner br"></div>
+      <div style="background: rgba(0,0,0,0.7); padding: 8px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; border: 1px solid rgba(255,255,255,0.2);">
+        Place the receipt inside the frame
+      </div>
+    </div>
+
+    <!-- Fallback if camera error -->
+    <div id="scanner-error-box" style="display: none; padding: 30px 20px; text-align: center; z-index: 10; max-width: 340px;">
+      <div style="font-size: 36px; margin-bottom: 12px;">📷</div>
+      <h3 style="font-size: 18px; margin-bottom: 8px;">Camera Notice</h3>
+      <p id="scanner-error-msg" style="font-size: 13px; color: var(--hint); margin-bottom: 18px; line-height: 1.4;"></p>
+      <button class="btn" onclick="document.getElementById('scanner-native-input').click()" style="width: 100%; margin-bottom: 10px;">
+        📸 Take Photo with Native Camera
+      </button>
+    </div>
+
+    <!-- Bottom Controls -->
+    <div id="scanner-camera-controls" style="position: absolute; bottom: 0; left: 0; right: 0; padding: 24px 20px; display: flex; align-items: center; justify-content: space-around; z-index: 20; background: linear-gradient(to top, rgba(0,0,0,0.85), transparent);">
+      <button onclick="document.getElementById('scanner-native-input').click()" style="width: 44px; height: 44px; border-radius: 50%; background: rgba(44,44,46,0.8); border: 1px solid rgba(255,255,255,0.2); font-size: 20px; cursor: pointer;">🖼️</button>
+      <button onclick="captureScannerPhoto()" style="width: 74px; height: 74px; border-radius: 50%; border: 4px solid #fff; background: transparent; padding: 4px; cursor: pointer;">
+        <div style="width: 100%; height: 100%; border-radius: 50%; background: #fff;"></div>
+      </button>
+      <div style="width: 44px;"></div>
+    </div>
+  </div>
+
+  <!-- Preview Viewport -->
+  <div id="scanner-view-preview" style="display: none; flex: 1; position: relative; flex-direction: column; background: #000;">
+    <div style="flex: 1; display: flex; align-items: center; justify-content: center; padding: 70px 16px 100px;">
+      <img id="scanner-preview-img" src="" alt="Receipt" style="max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 14px;" />
+    </div>
+    <div style="position: absolute; bottom: 0; left: 0; right: 0; padding: 20px; display: flex; gap: 12px; z-index: 20; background: linear-gradient(to top, rgba(0,0,0,0.95), transparent);">
+      <button class="btn ghost" onclick="retakeScannerPhoto()" style="flex: 1; border: 1px solid rgba(255,255,255,0.2);">🔄 Retake</button>
+      <button class="btn" id="scanner-verify-btn" onclick="verifyScannerPhoto()" style="flex: 2;">⚡ Verify Receipt</button>
+    </div>
+  </div>
+
+  <!-- Verifying Spinner View -->
+  <div id="scanner-view-verifying" style="display: none; flex: 1; flex-direction: column; align-items: center; justify-content: center; padding: 30px; text-align: center;">
+    <div class="spinner" style="width: 50px; height: 50px; border-width: 4px; margin-bottom: 20px;"></div>
+    <h3 style="font-size: 19px; font-weight: 700; margin-bottom: 8px;">Checking your receipt...</h3>
+    <p style="font-size: 13px; color: var(--hint); max-width: 260px;">Reading QR code, reference numbers, and validating with bank records.</p>
   </div>
 </div>
 

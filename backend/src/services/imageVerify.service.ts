@@ -22,6 +22,7 @@ export interface ImageVerificationOptions {
   branchId: string;
   cashierId: string;
   expectedAmount?: number;
+  provider?: string;
 }
 
 export interface VerificationOutcome {
@@ -32,7 +33,7 @@ export interface VerificationOutcome {
 export async function runImageVerification(
   opts: ImageVerificationOptions
 ): Promise<VerificationOutcome> {
-  const { buffer, mimetype, branchId, cashierId, expectedAmount } = opts;
+  const { buffer, mimetype, branchId, cashierId, expectedAmount, provider: explicitProvider } = opts;
   const t0 = Date.now();
 
   // ── Phase 1+2: Start OCR immediately — it runs in a Tesseract worker while
@@ -100,10 +101,13 @@ export async function runImageVerification(
   );
 
   const tVerify = Date.now();
+  const autoProvider = normalized.provider === 'UNKNOWN' ? (extractedOcr.provider || 'UNKNOWN') : normalized.provider;
+  const finalProvider = (autoProvider === 'UNKNOWN' && explicitProvider) ? explicitProvider : autoProvider;
+
   const result = await processVerification({
     branchId,
     cashierId,
-    provider: (normalized.provider === 'UNKNOWN' ? (extractedOcr.provider || 'UNKNOWN') : normalized.provider) as any,
+    provider: finalProvider as any,
     txnReference: normalized.txnReference || extractedOcr.txnReference || '',
     amount: extractedOcr.amount || undefined,
     expectedAmount,

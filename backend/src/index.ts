@@ -1,3 +1,4 @@
+import './polyfills';
 import dotenv from 'dotenv';
 dotenv.config();   // ← must run BEFORE any module that reads process.env at load time
 
@@ -8,6 +9,7 @@ import path from 'path';
 import apiRoutes from './routes/api.routes';
 import authRoutes from './routes/auth.routes';
 import miniappRoutes from './routes/miniapp.routes';
+import cashiersRoutes from './routes/cashiers.routes';
 import { warmOcrWorkers, warmOcr } from './services/receiptParser.service';
 import { warmPdf } from './services/verifyCBE';
 import { startBot } from './telegram/bot';
@@ -28,6 +30,7 @@ app.get('/api/health', (_req, res) => res.json({ status: 'ok', uptime: process.u
 app.use('/api', apiRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/miniapp', miniappRoutes);
+app.use('/api/cashiers', cashiersRoutes);
 
 // Serve Mini App static files
 // In production (compiled): __dirname is dist/  so miniapp is at dist/miniapp
@@ -49,6 +52,20 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 
 app.listen(port, () => {
   console.log(`CheckFlow ET Backend Engine running on port ${port}`);
+  // Also listen on unix socket for local testing
+  try {
+    const fs = require('fs');
+    const socketPath = '/tmp/express.sock';
+    if (fs.existsSync(socketPath)) {
+      fs.unlinkSync(socketPath);
+    }
+    app.listen(socketPath, () => {
+      console.log(`CheckFlow ET Backend also listening on ${socketPath}`);
+    });
+  } catch (err: any) {
+    console.warn(`Could not bind unix socket: ${err.message}`);
+  }
+
   // Pre-warm Tesseract workers in background so first image request doesn't wait
   warmOcrWorkers();
   warmOcr();
