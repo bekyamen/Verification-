@@ -133,14 +133,19 @@ export class TelebirrVerifier implements ProviderVerifier {
           `[TelebirrVerifier] Receiver phone "${receiverPhone}" / name "${receiverName}" did not match any registered accounts: ` +
             registeredAccounts.map((a) => `${a.accountNumber} (${a.accountHolderName})`).join(', ')
         );
+        const receiverInfo = receiverPhone
+          ? `${receiverPhone}${receiverName ? ` (${receiverName})` : ''}`
+          : (receiverName || 'another account');
+        const regAcctsStr = registeredAccounts.map((a) => a.accountNumber).join(', ');
+
         return {
           status: 'INVALID_RECEIPT',
-          amountExtracted: 0,
-          message: receiverPhone
-            ? `Receiver account mismatch. Receipt shows phone ${receiverPhone} which did not match any registered Telebirr account.`
-            : receiverName
-            ? `Receiver account mismatch. Receipt shows receiver name "${receiverName}" which did not match any registered account holder.`
-            : 'Receiver account mismatch. Receipt did not contain a recognisable receiver phone or name.',
+          amountExtracted: res.totalPaidAmount ? parseFloat(res.totalPaidAmount) : (payload.amount || 0),
+          reference: res.receiptNo || payload.txnReference,
+          receiverAccount: receiverInfo,
+          payerName: res.payerName,
+          date: res.paymentDate ? new Date(res.paymentDate) : undefined,
+          message: `Wrong Receiver: Payment was sent to ${receiverInfo}, not to your registered Telebirr account (${regAcctsStr}).`,
         };
       }
 

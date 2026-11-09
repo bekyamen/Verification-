@@ -92,9 +92,24 @@ export function formatVerificationResult({ httpStatus, result }: FormatOptions):
       );
 
     case 'INVALID_RECEIPT': {
-      // Determine if we actually got a meaningful reference
+      const isWrongReceiver = /wrong receiver|receiver account mismatch|receiver mismatch|not to your registered/i.test(result.message || '');
       const hasRef      = ref && ref !== '?' && ref.trim().length > 1;
       const hasProvider = provider && provider !== '?' && provider.trim().length > 1;
+
+      if (isWrongReceiver) {
+        return (
+          `⚠️ *WRONG RECEIVER — PAYMENT NOT ACCEPTED*\n\n` +
+          `❌ This payment was *NOT* received by your business\\!\n` +
+          `The customer transferred money to *another person's account*\\.\n\n` +
+          (message ? `📋 *Details:* ${message}\n\n` : '') +
+          `🏦 Provider: ${hasProvider ? `\`${provider}\`` : '_Unknown_'}\n` +
+          `🔖 Reference: ${hasRef ? `\`${ref}\`` : '*⚠️ Not found*'}\n` +
+          (amount && amount !== 'N/A' && amount !== 'ETB 0.00' ? `💰 Amount on Receipt: *${esc(amount)}*\n` : '') +
+          (receiver && receiver !== 'N/A' ? `🏧 Paid To Account: ${receiver}\n` : '') +
+          (payer && payer !== 'N/A' ? `👤 Payer: ${payer}\n` : '') +
+          `\n⛔ *Do NOT provide goods or services for this payment, Contact support if you need\\.*`
+        );
+      }
 
       return (
         `🚫 *UNVERIFIED — RECEIPT NOT ACCEPTED*\n\n` +

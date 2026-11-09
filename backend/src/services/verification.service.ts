@@ -284,8 +284,12 @@ export const processVerification = async (options: VerificationRequest): Promise
         });
       }
 
-      if (finalStatus !== 'VERIFIED' && providerResult.message) {
-        (record as any).message = providerResult.message;
+      if (finalStatus !== 'VERIFIED') {
+        if (providerResult.message) (record as any).message = providerResult.message;
+        if (providerResult.amountExtracted) (record as any).amount = new Prisma.Decimal(providerResult.amountExtracted);
+        if (providerResult.receiverAccount) (record as any).receivingAccount = providerResult.receiverAccount;
+        if (providerResult.payerName) (record as any).payerName = providerResult.payerName;
+        if (providerResult.reference) (record as any).txnReference = providerResult.reference;
       }
 
       return record;

@@ -119,10 +119,14 @@ export class CbeVerifier implements ProviderVerifier {
 
       // Check account match so Promise.any selects the registered account that actually matches
       if (res.receiverAccount && !receiptAccountMatchesRegistered(res.receiverAccount, accountDigits)) {
-        const err = Object.assign(new Error(`Receiver account mismatch. Expected ${account.accountNumber} but receipt shows ${res.receiverAccount}.`), {
-          statusCode: 400,
-          cbeResult: res,
-        });
+        const err = Object.assign(
+          new Error(`Payment was sent to ${res.receiverAccount}${res.receiver ? ` (${res.receiver})` : ''}, which does not match your registered business account.`),
+          {
+            statusCode: 400,
+            isAccountMismatch: true,
+            cbeResult: res,
+          }
+        );
         throw err;
       }
 
@@ -140,12 +144,37 @@ export class CbeVerifier implements ProviderVerifier {
       winner = await (Promise as any).any(accountAttempts) as AccountSuccess;
     } catch (aggErr: any) {
       // All accounts failed — pick status from the errors list
-      const errors: Array<{ statusCode?: number; cbeResult?: Awaited<ReturnType<typeof verifyCBE>> }> =
-        aggErr?.errors ?? [];
+      const errors: Array<{
+        message?: string;
+        statusCode?: number;
+        isAccountMismatch?: boolean;
+        cbeResult?: Awaited<ReturnType<typeof verifyCBE>>;
+      }> = aggErr?.errors ?? [];
+
+      // Check if this receipt was a verified bank transaction, but paid to someone else's account
+      const mismatchErr = errors.find((e) => e.isAccountMismatch && e.cbeResult);
+      if (mismatchErr && mismatchErr.cbeResult) {
+        const cbeRes = mismatchErr.cbeResult;
+        const receiverInfo = cbeRes.receiverAccount
+          ? `${cbeRes.receiverAccount}${cbeRes.receiver ? ` (${cbeRes.receiver})` : ''}`
+          : (cbeRes.receiver || 'another account');
+        const regAcctsStr = registeredAccounts.map((a) => a.accountNumber).join(', ');
+
+        return {
+          status: 'INVALID_RECEIPT',
+          amountExtracted: cbeRes.amount || 0,
+          reference: cbeRes.reference || payload.txnReference,
+          receiverAccount: receiverInfo,
+          payerName: cbeRes.payer,
+          date: cbeRes.date,
+          message: `Wrong Receiver: Payment was sent to ${receiverInfo}, not to your registered account (${regAcctsStr}).`,
+        };
+      }
+
       for (const e of errors) {
         if (e.statusCode) {
           lastStatusCode = e.statusCode;
-          lastError = e.cbeResult?.error || lastError;
+          lastError = e.message || e.cbeResult?.error || lastError;
         }
         if (e.statusCode === 404) {
           return { status: 'INVALID_RECEIPT', amountExtracted: 0, message: lastError };
@@ -164,13 +193,20 @@ export class CbeVerifier implements ProviderVerifier {
     const receiverAccount = res.receiverAccount ?? '';
 
     if (receiverAccount && !receiptAccountMatchesRegistered(receiverAccount, accountDigits)) {
+      const receiverInfo = res.receiverAccount
+        ? `${res.receiverAccount}${res.receiver ? ` (${res.receiver})` : ''}`
+        : 'another account';
       logger.warn(
         `[CbeVerifier] Receiver account mismatch: got "${receiverAccount}", expected "${account.accountNumber}"`
       );
       return {
         status: 'INVALID_RECEIPT',
-        amountExtracted: 0,
-        message: `Receiver account mismatch. Expected ${account.accountNumber} but receipt shows ${receiverAccount}.`,
+        amountExtracted: res.amount || 0,
+        reference: res.reference || payload.txnReference,
+        receiverAccount: receiverInfo,
+        payerName: res.payer,
+        date: res.date,
+        message: `Wrong Receiver: Payment was sent to ${receiverInfo}, not to your registered account (${account.accountNumber}).`,
       };
     }
 

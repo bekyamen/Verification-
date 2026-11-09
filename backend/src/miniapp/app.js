@@ -743,7 +743,8 @@ function renderVerifyResult(result) {
   let titleText = 'Payment Verified!';
   let descText = 'Legitimate payment received in your designated account.';
 
-  const isUnreadable = result.status === 'FAILED' || result.status === 'INVALID_RECEIPT' || result.status === 'UNKNOWN';
+  const isWrongReceiver = /wrong receiver|receiver account mismatch|receiver mismatch|not to your registered/i.test(result.message || '');
+  const isUnreadable = (result.status === 'FAILED' || result.status === 'INVALID_RECEIPT' || result.status === 'UNKNOWN') && !isWrongReceiver;
 
   if (hint) {
     hint.style.display = isUnreadable ? 'block' : 'none';
@@ -764,12 +765,21 @@ function renderVerifyResult(result) {
     descText = result.message || 'Amount differs from bank confirmation.';
     haptic('warning');
   } else if (result.status === 'FAILED' || result.status === 'INVALID_RECEIPT') {
-    borderCol = '#ff453a';
-    bgCol = 'rgba(255, 69, 58, 0.1)';
-    iconText = '❌';
-    titleText = 'Verification Failed';
-    descText = result.message || 'Payment could not be verified.';
-    haptic('error');
+    if (isWrongReceiver) {
+      borderCol = '#ff9f0a';
+      bgCol = 'rgba(255, 159, 10, 0.15)';
+      iconText = '⚠️';
+      titleText = 'Wrong Receiver — Not Accepted';
+      descText = result.message || 'Payment was sent to another person\'s account, not to your business. Do NOT release goods.';
+      haptic('warning');
+    } else {
+      borderCol = '#ff453a';
+      bgCol = 'rgba(255, 69, 58, 0.1)';
+      iconText = '❌';
+      titleText = 'Verification Failed';
+      descText = result.message || 'Payment could not be verified.';
+      haptic('error');
+    }
   } else {
     haptic('success');
   }
@@ -805,6 +815,12 @@ function renderVerifyResult(result) {
     html += `<div style="display:flex;justify-content:space-between">
       <span style="color:var(--hint)">Payer Phone:</span>
       <span>${escHtml(result.payerPhone)}</span>
+    </div>`;
+  }
+  if (result.receivingAccount) {
+    html += `<div style="display:flex;justify-content:space-between">
+      <span style="color:var(--hint)">Paid To:</span>
+      <span>${escHtml(result.receivingAccount)}</span>
     </div>`;
   }
   if (result.provider) {
