@@ -18,18 +18,25 @@ function normalizeCbeAccount(raw: string): string {
 function receiptAccountMatchesRegistered(receiptAccount: string, registeredAccount: string): boolean {
   if (!receiptAccount || !registeredAccount) return false;
 
-  const rNorm = normalizeCbeAccount(receiptAccount);
   const aNorm = normalizeCbeAccount(registeredAccount);
 
+  // Masked receipt account with asterisks (e.g. "1********0763" or "***0763")
+  if (receiptAccount.includes('*')) {
+    const rawParts = receiptAccount.split('*').filter((p) => p.length > 0);
+    if (rawParts.length > 0) {
+      const suffix = rawParts[rawParts.length - 1].replace(/\D/g, '');
+      const prefix = rawParts.length > 1 ? rawParts[0].replace(/\D/g, '') : '';
+      return Boolean(suffix && aNorm.endsWith(suffix) && (!prefix || aNorm.startsWith(prefix)));
+    }
+    return false;
+  }
+
+  const rNorm = normalizeCbeAccount(receiptAccount);
   // Exact match after normalization
   if (rNorm === aNorm) return true;
 
   // One contains the other (covers partial 13-digit vs. 9-digit etc.)
   if (rNorm.includes(aNorm) || aNorm.includes(rNorm)) return true;
-
-  // Masked receipt account: "***6789" — check trailing digits
-  const visibleDigits = receiptAccount.replace(/\*/g, '').replace(/\D/g, '');
-  if (visibleDigits && (aNorm.endsWith(visibleDigits) || rNorm.endsWith(visibleDigits))) return true;
 
   return false;
 }
@@ -105,6 +112,15 @@ export class CbeVerifier implements ProviderVerifier {
       if (!res.success) {
         const err = Object.assign(new Error(res.error || 'CBE lookup failed'), {
           statusCode: res.statusCode ?? 503,
+          cbeResult: res,
+        });
+        throw err;
+      }
+
+      // Check account match so Promise.any selects the registered account that actually matches
+      if (res.receiverAccount && !receiptAccountMatchesRegistered(res.receiverAccount, accountDigits)) {
+        const err = Object.assign(new Error(`Receiver account mismatch. Expected ${account.accountNumber} but receipt shows ${res.receiverAccount}.`), {
+          statusCode: 400,
           cbeResult: res,
         });
         throw err;

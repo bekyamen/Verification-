@@ -74,9 +74,38 @@ type Provider = typeof SUPPORTED_PROVIDERS[number];
 
 // ── Per-user context lookup ─────────────────────────────────────────────────
 
+interface CachedUserContext {
+  context: TelegramUserContext | null;
+  expiresAt: number;
+}
+
+const USER_CONTEXT_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const userContextCache = new Map<string, CachedUserContext>();
+
+/** Invalidate cached Telegram user context on login, linking, or role update */
+export function clearUserContextCache(telegramId?: number | bigint | string): void {
+  if (telegramId !== undefined && telegramId !== null) {
+    userContextCache.delete(telegramId.toString());
+  } else {
+    userContextCache.clear();
+  }
+}
+
 async function resolveUserContext(fromId: number | undefined): Promise<TelegramUserContext | null> {
   if (!fromId) return null;
-  return getRegisteredUser(fromId);
+  const key = fromId.toString();
+  const cached = userContextCache.get(key);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.context;
+  }
+
+  const context = await getRegisteredUser(fromId);
+  userContextCache.set(key, {
+    context,
+    // If not found, cache for shorter time (30s) so newly linked users are discovered quickly
+    expiresAt: Date.now() + (context ? USER_CONTEXT_TTL_MS : 30 * 1000),
+  });
+  return context;
 }
 
 /** Send friendly onboarding prompt with a Mini App button */

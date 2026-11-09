@@ -7,6 +7,7 @@ import { AuthenticatedRequest, JwtPayload } from '../types';
 import { recordFailedAttempt, resetLoginAttempts } from '../middleware/rateLimit.middleware';
 import { verifyInitData } from './miniapp.controller';
 import logger from '../utils/logger';
+import { clearUserContextCache } from '../telegram/bot';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 const COOKIE_OPTIONS = {
@@ -113,6 +114,10 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    if (telegramId) {
+      clearUserContextCache(telegramId);
+    }
+
     const payload: JwtPayload = {
       userId: newUser.id,
       role: newUser.role,
@@ -212,6 +217,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
               where: { id: user.id },
               data: { telegramId },
             });
+            clearUserContextCache(telegramId);
             logger.info(`[auth] Successfully linked Telegram ID ${telegramId} to ${user.fullName}`);
           }
         }
@@ -342,6 +348,7 @@ export const cashierPasswordLogin = async (req: Request, res: Response): Promise
               where: { id: matched.id },
               data: { telegramId },
             });
+            clearUserContextCache(telegramId);
             logger.info(`[auth] Successfully linked Telegram ID ${telegramId} to cashier ${matched.fullName}`);
           }
         }

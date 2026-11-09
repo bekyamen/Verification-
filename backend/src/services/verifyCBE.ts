@@ -21,9 +21,9 @@ import logger from '../utils/logger';
 import { cbeCache } from '../utils/verifyCache';
 
 // ── CBE Public JSON API ──────────────────────────────────────────────────────
-// Official public endpoint: https://mbreciept.cbe.com.et/v2-{token}
-// When called with Accept: application/json this returns the transaction JSON.
-const CBE_JSON_API_BASE = 'https://mbreciept.cbe.com.et';
+// Official public endpoint: https://mb.cbe.com.et/api/v1/transactions/public/transaction-detail/{token}
+const CBE_PUBLIC_API_BASE = process.env.CBE_PUBLIC_API_BASE ?? 'https://mb.cbe.com.et';
+const CBE_JSON_API_BASE = process.env.CBE_JSON_API_BASE ?? 'https://mbreciept.cbe.com.et';
 const CBE_APP_ID = process.env.CBE_APP_ID ?? 'd1292e42-7400-49de-a2d3-9731caa4c819';
 const CBE_APP_VERSION = process.env.CBE_APP_VERSION ?? '0a01980b-9859-1369-8198-59f403820000';
 
@@ -121,6 +121,7 @@ const toDate = (v: unknown): Date | undefined => {
  */
 const parseCBEDate = (v: unknown): Date | undefined => {
   if (!v) return undefined;
+  if (Array.isArray(v) && v.length > 0) return parseCBEDate(v[0]);
   const s = String(v).trim();
   if (/^\d{8}$/.test(s)) {
     const iso = `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
@@ -292,20 +293,22 @@ async function extractFromHtmlSpa(html: string, token: string): Promise<VerifyRe
 
 // ── 1c. NEW CBE receipt token → JSON / PDF / SPA ─────────────────────────────
 
-async function verifyByToken(token: string): Promise<VerifyResult> {
+async function verifyByToken(tokenInput: string): Promise<VerifyResult> {
+  // Clean token: strip URL or leading slashes (e.g. "v2-hfHCxHB8wsoQ4CTceO2v")
+  const cleanToken = tokenInput
+    .replace(/^https?:\/\/(?:mbreciept|mbreceipt)\.cbe\.com\.et\//i, '')
+    .replace(/^\/+/, '')
+    .trim();
+
   // ── Feature flag ─────────────────────────────────────────────────────────────
-  // The CBE receipt viewer (mbreciept.cbe.com.et) currently returns an HTML SPA
-  // shell that exposes no usable API sub-paths, so every token lookup wastes ~7 s
-  // before falling through to the legacy FT route.  Keep this route disabled until
-  // the viewer starts returning JSON again.  Set CBE_TOKEN_ROUTE=on to re-enable.
-  if (process.env.CBE_TOKEN_ROUTE !== 'on') {
-    logger.info('[CBE/token] Skipped — set CBE_TOKEN_ROUTE=on to enable (SPA returns no data).');
-    return { success: false, error: 'CBE receipt-link lookup is disabled (viewer returns no data).', statusCode: 502 };
+  // Enabled by default; set CBE_TOKEN_ROUTE=off only if explicitly disabling.
+  if (process.env.CBE_TOKEN_ROUTE === 'off') {
+    logger.info('[CBE/token] Skipped — CBE_TOKEN_ROUTE is turned off.');
+    return { success: false, error: 'CBE receipt-link lookup is disabled.', statusCode: 502 };
   }
 
-  // URL format: https://mbreciept.cbe.com.et/v2-{token}
-  // token already contains the "v2-" prefix (e.g. "v2-hfHCxHm0dwBHOQSgWNOf")
-  const url = `${CBE_JSON_API_BASE}/${token}`;
+  // Real fast CBE public endpoint: https://mb.cbe.com.et/api/v1/transactions/public/transaction-detail/{token}
+  const url = `${CBE_PUBLIC_API_BASE}/api/v1/transactions/public/transaction-detail/${cleanToken}`;
 
   // ── Circuit-breaker check ────────────────────────────────────────────────────
   if (circuitIsOpen()) {
@@ -323,16 +326,16 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
     try {
       logger.info(`[CBE/token] Fetching (attempt ${attempt}/${MAX_RETRIES}): ${url}`);
 
-      // Download as binary so we can detect PDF before parsing
+      // Query the official public API with required headers
       const response = await axios.get(url, {
         httpsAgent: tokenAgent,
         headers: {
+          'Accept': 'application/json, text/plain, */*',
           'X-App-ID': CBE_APP_ID,
           'X-App-Version': CBE_APP_VERSION,
-          'Accept': 'application/json, application/pdf, */*',
           'Origin': 'https://mbreciept.cbe.com.et',
           'Referer': 'https://mbreciept.cbe.com.et/',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
         timeout: TOKEN_TIMEOUT_MS,
         responseType: 'arraybuffer',
@@ -343,17 +346,12 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
       const contentType = ((response.headers['content-type'] as string) ?? '').toLowerCase();
 
       // ── PDF path ────────────────────────────────────────────────────────────
-      // The v2 endpoint sometimes returns a PDF instead of JSON.
-      // Detect by content-type OR the %PDF magic bytes in the first 8 bytes.
       const isPdf =
         contentType.includes('application/pdf') ||
         buf.slice(0, 8).toString('ascii').startsWith('%PDF');
 
       if (isPdf) {
         logger.info('[CBE/token] Response is a PDF — extracting text with pdf-parse');
-        if (process.env.LOG_CHECK_RAW === '1') {
-          logger.debug(`[CBE/token] PDF size: ${buf.length} bytes`);
-        }
         const pdfParser = new PDFParse({ data: buf });
         let pdfText: string;
         try {
@@ -362,25 +360,21 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
         } finally {
           await pdfParser.destroy().catch(() => undefined);
         }
-        if (process.env.LOG_CHECK_RAW === '1') {
-          logger.debug(`[CBE/token] PDF text (first 3000 chars):\n${pdfText.slice(0, 3000)}`);
-        }
         return parseCbePdfText(pdfText);
       }
 
-      // ── HTML SPA path ────────────────────────────────────────────────────────
+      // ── HTML SPA path (fallback only if endpoint returns HTML) ───────────────
       const isHtml = contentType.includes('text/html') || buf.slice(0, 15).toString('utf8').trimStart().startsWith('<');
       if (isHtml) {
         logger.info('[CBE/token] Response is an HTML SPA page — probing for API sub-paths');
-        return extractFromHtmlSpa(buf.toString('utf8'), token);
+        return extractFromHtmlSpa(buf.toString('utf8'), cleanToken);
       }
 
-      // ── JSON path ───────────────────────────────────────────────────────────
+      // ── JSON path (Standard fast response from mb.cbe.com.et) ────────────────
       let data: any;
       try {
         data = JSON.parse(buf.toString('utf8'));
       } catch {
-        // Not JSON, not PDF, not HTML — log and fail gracefully
         const preview = buf.toString('utf8').slice(0, 200);
         logger.warn(`[CBE/token] Response is neither JSON, PDF, nor HTML. Preview: ${preview}`);
         return { success: false, error: 'CBE API returned an unrecognised response format.', statusCode: 502 };
@@ -410,14 +404,13 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
       // Log every key we see so we can identify new field names in production
       logger.info(`[CBE/token] Response keys: ${Object.keys(d).join(', ')}`);
 
-      // Real API field is "debitAmount"; fall back to all known variants.
+      // Real API field is "amountCredited" or "debitAmount"; prioritize amountCredited
       const amount = toNumber(
-        d.debitAmount ?? d.amount ?? d.transferredAmount ?? d.settledAmount ??
-        d.creditAmount ?? d.totalAmount ?? d.transactionAmount ?? d.paidAmount ??
-        d.principal ?? d.value ?? d.netAmount ?? d.credit ?? d.debit ??
+        d.amountCredited ?? d.creditAmount ?? d.debitAmount ?? d.amount ?? d.transferredAmount ?? d.settledAmount ??
+        d.totalAmount ?? d.transactionAmount ?? d.paidAmount ??
+        d.amountDebited ?? d.principal ?? d.value ?? d.netAmount ?? d.credit ?? d.debit ??
         d.txnAmount ?? d.transAmount ?? d.transferAmount ?? d.originalAmount ??
         d.txn_amount ?? d.trans_amount ?? d.transfer_amount ??
-        // Also check one level nested (e.g. { transaction: { amount: 30 } })
         (d.transaction as any)?.amount ?? (d.transaction as any)?.debitAmount ??
         (d.data as any)?.amount ?? (d.data as any)?.debitAmount
       );
@@ -426,7 +419,10 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
         return { success: false, error: 'CBE API response missing amount.', statusCode: 502 };
       }
 
-      // Real API: date is in processingDate ("YYYYMMDD"), names use "Holder" suffix
+      // Real API: date is in dateTimes array or processingDate ("YYYYMMDD"), names use "Holder" suffix
+      const dateTimeStr = Array.isArray(d.dateTimes) && d.dateTimes[0] ? d.dateTimes[0] : (d.processingDate ?? d.transactionDate ?? d.date ?? d.dateTime);
+      const parsedDate = parseCBEDate(dateTimeStr);
+
       return {
         success: true,
         payer:          d.debitAccountHolder  ?? d.debitAccountName  ?? d.payerName    ?? d.senderName   ?? undefined,
@@ -434,8 +430,8 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
         receiver:       d.creditAccountHolder ?? d.creditAccountName ?? d.receiverName ?? undefined,
         receiverAccount: d.creditAccountNo    ?? d.receiverAccount   ?? undefined,
         amount,
-        date: parseCBEDate(d.processingDate ?? d.transactionDate ?? d.date ?? d.dateTime),
-        reference: d.id ?? d.transactionId ?? d.reference ?? token,
+        date: parsedDate,
+        reference: d.id ?? d.transactionId ?? d.reference ?? cleanToken,
         reason: Array.isArray(d.paymentDetails)
           ? d.paymentDetails.join(' ')
           : (d.description ?? d.narrative ?? d.reason ?? null),
@@ -475,7 +471,7 @@ async function verifyByToken(token: string): Promise<VerifyResult> {
           const errIsHtml = errCT.includes('text/html') || errBuf.slice(0, 15).toString('utf8').trimStart().startsWith('<');
           if (errIsHtml) {
             logger.info('[CBE/token] 502 body is HTML — probing SPA API sub-paths');
-            return extractFromHtmlSpa(errBuf.toString('utf8'), token);
+            return extractFromHtmlSpa(errBuf.toString('utf8'), cleanToken);
           }
 
           // 502 with an unknown body — log for diagnostics

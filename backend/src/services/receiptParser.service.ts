@@ -1,7 +1,10 @@
 import '../polyfills';
-import { createWorker, PSM } from 'tesseract.js';
+import { createWorker, createScheduler, PSM } from 'tesseract.js';
 const pdfParse = require('pdf-parse');
 import { ExtractedReceiptData } from '../types';
+import os from 'os';
+import path from 'path';
+import fs from 'fs';
 
 export const parseRawText = (rawText: string): ExtractedReceiptData => {
   const normalizedText = rawText.toUpperCase().replace(/\s+/g, ' ');
@@ -39,7 +42,7 @@ export const parseRawText = (rawText: string): ExtractedReceiptData => {
 
   // Heuristics for CBE
   if (normalizedText.includes('CBE') || normalizedText.includes('COMMERCIAL BANK') || normalizedText.includes('FT')) {
-    provider = normalizedText.includes('MOBILE') ? 'CBE' : 'CBE'; // Kept ternary just in case to avoid messing up logic, or just simplify to 'CBE'
+    provider = 'CBE';
     // CBE transaction refs usually start with FT followed by 8-12 alphanumeric characters
     // Or sometimes just digits in USSD
     const cbeRefMatch = normalizedText.match(/\b(FT[A-Z0-9]{8,12})\b/);
@@ -85,73 +88,112 @@ export const parseRawText = (rawText: string): ExtractedReceiptData => {
   };
 };
 
-let workerPool: any[] = [];
-let workerIndex = 0;
-let poolInitPromise: Promise<void> | null = null;
+let scheduler: any = null;
+let initPromise: Promise<void> | null = null;
 
-const POOL_SIZE = 2;
+const cpuCount = os.cpus()?.length || 1;
+const DEFAULT_WORKERS = cpuCount > 1 ? 2 : 1;
+const WORKER_COUNT = process.env.OCR_WORKERS ? parseInt(process.env.OCR_WORKERS, 10) || DEFAULT_WORKERS : DEFAULT_WORKERS;
 
-/**
- * Pre-warm the Tesseract worker pool on first call.
- * Uses a single promise so concurrent early callers don't create extra workers.
- */
-async function ensureWorkerPool(): Promise<void> {
-  if (workerPool.length === POOL_SIZE) return;
-  if (!poolInitPromise) {
-    poolInitPromise = (async () => {
-      for (let i = workerPool.length; i < POOL_SIZE; i++) {
-        const w = await createWorker('eng');
-        // PSM 6 = SINGLE_BLOCK: assume a single uniform block of text.
-        // Skips expensive page-orientation detection (OSD), shaving ~200–400 ms per image.
-        await w.setParameters({ tessedit_pageseg_mode: PSM.SINGLE_BLOCK });
-        workerPool.push(w);
-      }
-    })();
+/** Locate local eng.traineddata to avoid CDN network overhead and latency */
+function getLocalTessdataDir(): string | null {
+  const candidates = [
+    process.cwd(),
+    path.resolve(process.cwd(), 'backend'),
+    path.resolve(__dirname, '../../'),
+    path.resolve(__dirname, '../..'),
+    path.resolve(__dirname, '..'),
+    '/app',
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, 'eng.traineddata'))) {
+      return dir;
+    }
   }
-  return poolInitPromise;
+  return null;
 }
 
 /**
- * Call once at server startup to boot Tesseract workers in the background.
- * This ensures the first image request doesn't wait for worker initialisation.
+ * Initialize Tesseract scheduler with worker pool.
+ * Does not keep a rejected promise on failure so subsequent requests can retry.
+ */
+async function initOcrScheduler(): Promise<void> {
+  if (scheduler && scheduler.getNumWorkers() > 0) return;
+  if (initPromise) return initPromise;
+
+  initPromise = (async () => {
+    try {
+      const newScheduler = createScheduler();
+      const localDir = getLocalTessdataDir();
+      const workerOptions: any = { gzip: false };
+      if (localDir) {
+        workerOptions.langPath = localDir;
+      }
+
+      for (let i = 0; i < WORKER_COUNT; i++) {
+        const worker = await createWorker('eng', 1, workerOptions);
+        await worker.setParameters({
+          tessedit_pageseg_mode: PSM.SINGLE_BLOCK,
+        });
+        newScheduler.addWorker(worker);
+      }
+      scheduler = newScheduler;
+    } catch (err) {
+      // Reset so next caller can attempt initialization again
+      initPromise = null;
+      throw err;
+    }
+  })();
+
+  return initPromise;
+}
+
+/**
+ * Pre-warm the Tesseract scheduler workers on server startup.
  */
 export function warmOcrWorkers(): void {
-  ensureWorkerPool().catch((err) => {
+  initOcrScheduler().catch((err) => {
     console.warn('[OCR] Worker pre-warm failed:', err?.message ?? err);
   });
 }
 
-export const warmOcr = () => ensureWorkerPool().catch(() => undefined);
-
-/** Round-robin worker selection. Both workers are always kept alive. */
-async function getWorker(): Promise<any> {
-  await ensureWorkerPool();
-  const w = workerPool[workerIndex % POOL_SIZE];
-  workerIndex++;
-  return w;
-}
+export const warmOcr = () => initOcrScheduler().catch(() => undefined);
 
 /**
- * Pre-process an image buffer with sharp before handing it to Tesseract:
- *  - Resize to ≤ 1000 px wide (preserves aspect ratio)
+ * Pre-process an image buffer with sharp:
+ *  - Auto-rotate (EXIF)
+ *  - Resize to targetWidth (preserving aspect ratio)
  *  - Convert to grayscale
- * This typically halves OCR time compared to a full-size colour image.
- * Falls back to the original buffer if sharp fails.
+ *  - Normalize contrast
+ *  - Fast PNG compression (level 1)
  */
-async function preprocessImage(buf: Buffer): Promise<Buffer> {
+async function preprocessImage(buf: Buffer, targetWidth: number): Promise<Buffer> {
   try {
-    // sharp's CJS interop: the callable is at module.default or the module itself
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const sharpMod = require('sharp');
     const sharpFn: (input: Buffer) => any = sharpMod.default ?? sharpMod;
     return await sharpFn(buf)
-      .resize({ width: 700, withoutEnlargement: true })  // 700 px is enough for Tesseract; smaller = faster
+      .rotate()
+      .resize({ width: targetWidth, withoutEnlargement: true })
       .grayscale()
-      .png()
+      .normalize()
+      .png({ compressionLevel: 1 })
       .toBuffer() as Buffer;
   } catch {
-    return buf; // sharp failed — use original
+    return buf;
   }
+}
+
+/** Run an OCR job requesting only plain text */
+async function runOcrJob(imgBuf: Buffer): Promise<string> {
+  await initOcrScheduler();
+  const res = await scheduler.addJob(
+    'recognize',
+    imgBuf,
+    {},
+    { text: true, hocr: false, tsv: false, box: false }
+  );
+  return res?.data?.text ?? '';
 }
 
 export const parseFileBuffer = async (fileBuffer: Buffer, mimetype: string): Promise<ExtractedReceiptData> => {
@@ -159,27 +201,38 @@ export const parseFileBuffer = async (fileBuffer: Buffer, mimetype: string): Pro
     try {
       const pdfData = await pdfParse(fileBuffer);
       if (!pdfData.text || pdfData.text.trim().length === 0) {
-         throw new Error("PDF parsing yielded empty text");
+        throw new Error("PDF parsing yielded empty text");
       }
       return parseRawText(pdfData.text);
     } catch (error) {
-       throw new Error(`Failed to parse PDF: ${error instanceof Error ? error.message : 'Unknown PDF error'}`);
+      throw new Error(`Failed to parse PDF: ${error instanceof Error ? error.message : 'Unknown PDF error'}`);
     }
   }
 
-  // Fallback to Image OCR
+  // Two-tier Image OCR
   try {
-    // Pre-process: resize + grayscale to speed up Tesseract
-    const processedBuf = await preprocessImage(fileBuffer);
-    const worker = await getWorker();
-    const { data: { text } } = await worker.recognize(processedBuf);
-    
-    const combinedText = text;
-    if (!combinedText || combinedText.trim().length === 0) {
+    // Tier 1: 1000px fast scan
+    const tier1Buf = await preprocessImage(fileBuffer, 1000);
+    const text1 = await runOcrJob(tier1Buf);
+    let parsed = parseRawText(text1);
+
+    // Tier 2: 1500px detailed scan only if no txnReference found
+    if (!parsed.txnReference) {
+      const tier2Buf = await preprocessImage(fileBuffer, 1500);
+      const text2 = await runOcrJob(tier2Buf);
+      if (text2 && text2.trim().length > 0) {
+        const parsed2 = parseRawText(text2);
+        if (parsed2.txnReference || !parsed.provider || parsed.provider === 'UNKNOWN') {
+          parsed = parsed2;
+        }
+      }
+    }
+
+    if (!parsed.rawText || parsed.rawText.trim().length === 0) {
       throw new Error("OCR yielded empty text");
     }
 
-    return parseRawText(combinedText);
+    return parsed;
   } catch (error) {
     throw new Error(`Failed to parse image: ${error instanceof Error ? error.message : 'Unknown OCR error'}`);
   }

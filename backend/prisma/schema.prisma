@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model Organization {
@@ -63,6 +64,8 @@ model BankSettlementAccount {
   createdBy         User?        @relation("CreatedAccounts", fields: [createdById], references: [id])
   organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   updatedBy         User?        @relation("UpdatedAccounts", fields: [updatedById], references: [id])
+
+  @@index([organizationId, isActive])
 }
 
 model VerificationRecord {
@@ -82,10 +85,12 @@ model VerificationRecord {
   receiptUrl       String?
   receivingAccount String?
   senderAccount    String?
+  createdAt        DateTime           @default(now())
   branch           Branch             @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   @@unique([branchId, provider, txnReference])
   @@index([branchId, verifiedAt, status])
+  @@index([branchId, createdAt])
 }
 
 model DailyReport {

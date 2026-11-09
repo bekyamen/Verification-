@@ -17,6 +17,7 @@ import jwt from 'jsonwebtoken';
 import prisma from '../utils/prisma';
 import { AuthenticatedRequest, JwtPayload } from '../types';
 import logger from '../utils/logger';
+import { clearUserContextCache } from '../telegram/bot';
 
 const JWT_SECRET   = process.env.JWT_SECRET   || 'fallback_secret';
 const BOT_TOKEN    = () => process.env.TELEGRAM_BOT_TOKEN ?? '';
@@ -214,6 +215,7 @@ export const miniappLink = async (req: AuthenticatedRequest, res: Response): Pro
       data:  { telegramId },
     });
 
+    clearUserContextCache(telegramId);
     logger.info(`[miniapp] Linked telegramId=${parsed.user.id} to userId=${userId}`);
     res.status(200).json({ ok: true });
 
