@@ -129,9 +129,18 @@ export const decodeReceiptQr = async (buffer: Buffer, mimetype: string): Promise
             if (qrUrl) return qrUrl;
         }
 
-        // Pass 4 (last resort): inverted codes on 1400px base image with attemptBoth
+        // Pass 4: inverted / challenging codes on fast 900px buffer
         await yieldCpu();
-        return await runDecode(baseBuffer, 'attemptBoth');
+        qrUrl = await runDecode(small, 'attemptBoth');
+        if (qrUrl) return qrUrl;
+
+        // Pass 5 (extreme last resort): full base buffer without inverted double-scan
+        if (baseInfo.width > 900 || baseInfo.height > 900) {
+            await yieldCpu();
+            return await runDecode(baseBuffer, 'dontInvert');
+        }
+
+        return null;
     } catch (e) {
         return null;
     }

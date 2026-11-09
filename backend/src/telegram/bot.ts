@@ -23,6 +23,7 @@
 
 import { Bot, Context, InlineKeyboard } from 'grammy';
 import axios from 'axios';
+import https from 'https';
 import { getRegisteredUser, TelegramUserContext } from './auth';
 import { formatVerificationResult, formatStatusLine } from './formatter';
 import { runImageVerification } from '../services/imageVerify.service';
@@ -180,8 +181,40 @@ export function validateBotConfig(): string[] {
 const DOWNLOAD_MAX_ATTEMPTS = 3;
 const DOWNLOAD_RETRY_DELAY_MS = 1_500;
 
+// Persistent keep-alive agent for Telegram API file downloads
+const telegramDownloadAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 30,
+  keepAliveMsecs: 60_000,
+});
+
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Select the optimal photo size (~1000px - 1400px).
+ * Screenshots taken on modern smartphones can be 4K (2-5MB). Downloading bloated files
+ * adds 2-3 seconds of unnecessary latency. An image with ~1280px dimension is typically
+ * ~100-250KB, downloads in <100ms, and provides full fidelity for QR code and OCR parsing.
+ */
+function selectOptimalPhoto(photos: Array<{ file_id: string; width: number; height: number }>): { file_id: string; width: number; height: number } {
+  if (!photos || photos.length === 0) throw new Error('No photos in message');
+  if (photos.length === 1) return photos[0];
+
+  // Try to find the sweet spot: max dimension between 900px and 1600px
+  const ideal = photos.find((p) => {
+    const maxDim = Math.max(p.width, p.height);
+    return maxDim >= 900 && maxDim <= 1600;
+  });
+  if (ideal) return ideal;
+
+  // Otherwise find first photo with max dimension >= 800px
+  const medium = photos.find((p) => Math.max(p.width, p.height) >= 800);
+  if (medium) return medium;
+
+  // Fallback: largest available
+  return photos[photos.length - 1];
 }
 
 async function downloadTelegramFile(
@@ -205,7 +238,8 @@ async function downloadTelegramFile(
     try {
       const resp = await axios.get<ArrayBuffer>(url, {
         responseType: 'arraybuffer',
-        timeout: 30_000,
+        timeout: 20_000,
+        httpsAgent: telegramDownloadAgent,
       });
       const buffer = Buffer.from(resp.data);
       return { buffer, mime };
@@ -531,16 +565,17 @@ export function createBot(): Bot {
       return;
     }
 
-    await sendTyping(ctx);
-    try { await ctx.reply('⏳ Verifying receipt photo\\.\\.\\.', { parse_mode: 'MarkdownV2' }); } catch { /* non-critical */ }
+    const photos = ctx.message.photo;
+    const targetPhoto = selectOptimalPhoto(photos);
+    logger.info(`[telegram] photo verify user=${userCtx.fullName} (${userCtx.organizationName}) dim=${targetPhoto.width}x${targetPhoto.height} fileId=${targetPhoto.file_id}`);
 
-    const photos  = ctx.message.photo;
-    const largest = photos[photos.length - 1];
-    logger.info(`[telegram] photo verify user=${userCtx.fullName} (${userCtx.organizationName}) fileId=${largest.file_id}`);
+    // Fire typing and status prompt in parallel with download (do not block!)
+    sendTyping(ctx).catch(() => {});
+    const statusMsgPromise = ctx.reply('⏳ Verifying receipt photo\\.\\.\\.', { parse_mode: 'MarkdownV2' }).catch(() => null);
 
     let replyText: string;
     try {
-      const { buffer, mime } = await downloadTelegramFile(bot, largest.file_id);
+      const { buffer, mime } = await downloadTelegramFile(bot, targetPhoto.file_id);
       const outcome = await runImageVerification({
         buffer,
         mimetype:  mime,
@@ -554,6 +589,16 @@ export function createBot(): Bot {
       replyText = '🆘 Failed to process this image\\. Please try again or send the receipt as a document \\(PDF\\)\\.';
     }
 
+    // Deliver reply by transforming the status message in-place for instant feedback
+    const statusMsg = await statusMsgPromise;
+    if (statusMsg) {
+      try {
+        await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, replyText, { parse_mode: 'MarkdownV2' });
+        return;
+      } catch {
+        // Fall back to new reply if edit fails
+      }
+    }
     try {
       await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
     } catch (sendErr: any) {
@@ -586,8 +631,8 @@ export function createBot(): Bot {
       return;
     }
 
-    await sendTyping(ctx);
-    try { await ctx.reply(`⏳ Verifying ${isPdf ? 'PDF' : 'image'} document\\.\\.\\.`, { parse_mode: 'MarkdownV2' }); } catch { /* non-critical */ }
+    sendTyping(ctx).catch(() => {});
+    const statusMsgPromise = ctx.reply(`⏳ Verifying ${isPdf ? 'PDF' : 'image'} document\\.\\.\\.`, { parse_mode: 'MarkdownV2' }).catch(() => null);
 
     logger.info(`[telegram] document verify user=${userCtx.fullName} (${userCtx.organizationName}) mime=${mimeType} fileId=${doc.file_id}`);
 
@@ -607,6 +652,15 @@ export function createBot(): Bot {
       replyText = '🆘 Failed to process this document\\. Please try again\\.';
     }
 
+    const statusMsg = await statusMsgPromise;
+    if (statusMsg) {
+      try {
+        await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, replyText, { parse_mode: 'MarkdownV2' });
+        return;
+      } catch {
+        // Fall back to new reply if edit fails
+      }
+    }
     try {
       await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
     } catch (sendErr: any) {

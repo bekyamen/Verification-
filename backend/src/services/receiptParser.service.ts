@@ -43,15 +43,26 @@ export const parseRawText = (rawText: string): ExtractedReceiptData => {
   // Heuristics for CBE
   if (normalizedText.includes('CBE') || normalizedText.includes('COMMERCIAL BANK') || normalizedText.includes('FT')) {
     provider = 'CBE';
-    // CBE transaction refs usually start with FT followed by 8-12 alphanumeric characters
-    // Or sometimes just digits in USSD
-    const cbeRefMatch = normalizedText.match(/\b(FT[A-Z0-9]{8,12})\b/);
+    // 1. Standard FT reference (8-14 alphanumeric characters)
+    const cbeRefMatch = normalizedText.match(/\b(FT[A-Z0-9]{8,14})\b/);
     if (cbeRefMatch) {
       txnReference = cbeRefMatch[1];
     } else {
-      // Fallback for missing FT due to OCR glitch
-      const cbeAltMatch = normalizedText.match(/\b(F[T|7][A-Z0-9]{8,12})\b/);
-      if (cbeAltMatch) txnReference = cbeAltMatch[1].replace('F7', 'FT');
+      // 2. Labeled: e.g. "TXN ID: FT26286ZF0XC" or "REFERENCE: FT..."
+      const labeledMatch = normalizedText.match(/(?:TXN|TRANS|REF|TRANSACTION|REFERENCE)(?:\s*(?:ID|NO|NUMBER))?[:\s]+(FT[A-Z0-9]{8,14})\b/);
+      if (labeledMatch) {
+        txnReference = labeledMatch[1];
+      } else {
+        // 3. Spaced FT due to OCR: "FT 26286ZF0XC"
+        const spacedMatch = normalizedText.match(/\bFT\s+([A-Z0-9]{8,14})\b/);
+        if (spacedMatch) {
+          txnReference = 'FT' + spacedMatch[1];
+        } else {
+          // 4. Glitch: F7 / FI / PT
+          const altMatch = normalizedText.match(/\b(F[T|7|I|1][A-Z0-9]{8,14})\b/);
+          if (altMatch) txnReference = 'FT' + altMatch[1].slice(2);
+        }
+      }
     }
     amount = extractAmount(normalizedText); 
   } 
@@ -65,13 +76,12 @@ export const parseRawText = (rawText: string): ExtractedReceiptData => {
     normalizedText.includes('TRANSFER MONEY')
   ) {
     provider = 'TELEBIRR';
-    // Telebirr transaction IDs are 10-12 alphanumeric characters (MUST contain both letters and digits)
-    // Prefer the one near a label like 'Transaction Numb' or 'Transaction Number'
-    const telebirrLabelMatch = normalizedText.match(/TRANSACTION\s+(?:NUMB(?:ER)?|NO|ID)\s*:?\s*([A-Z0-9]{8,15})/);
+    // 1. Labeled transaction number
+    const telebirrLabelMatch = normalizedText.match(/(?:TRANSACTION|TXN)\s*(?:NUMB(?:ER)?|NO|ID)?[:\s.]+([A-Z0-9]{8,18})/);
     if (telebirrLabelMatch) {
       txnReference = telebirrLabelMatch[1];
     } else {
-      const telebirrMatch = normalizedText.match(/\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*[0-9])[A-Z0-9]{10,12}\b/);
+      const telebirrMatch = normalizedText.match(/\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*[0-9])[A-Z0-9]{10,14}\b/);
       if (telebirrMatch) {
         txnReference = telebirrMatch[0];
       }
@@ -177,7 +187,7 @@ async function preprocessImage(buf: Buffer, targetWidth: number): Promise<Buffer
       .resize({ width: targetWidth, withoutEnlargement: true })
       .grayscale()
       .normalize()
-      .png({ compressionLevel: 1 })
+      .jpeg({ quality: 85 })
       .toBuffer() as Buffer;
   } catch {
     return buf;
