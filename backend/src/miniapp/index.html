@@ -627,9 +627,15 @@
 <div id="screen-verify" class="screen">
   <!-- Top Filter Bar -->
   <div class="vp-topbar">
-    <div class="vp-brand-pill">
-      <span>⚡</span>
-      <span id="verify-cashier-label">CheckFlow ET</span>
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <button id="vp-back-btn" type="button" class="vp-date-btn" style="display: none; padding: 7px 11px;" onclick="handleAppBack()" aria-label="Go back">
+        <span>‹</span>
+        <span>Back</span>
+      </button>
+      <div class="vp-brand-pill">
+        <span>⚡</span>
+        <span id="verify-cashier-label">CheckFlow ET</span>
+      </div>
     </div>
 
     <div class="vp-date-wrap">
@@ -1160,7 +1166,7 @@
 
 <div id="toast"></div>
 
-<script src="app.js?v=6"></script>
-<script src="scanner.js?v=7"></script>
+<script src="app.js?v=7"></script>
+<script src="scanner.js?v=8"></script>
 </body>
 </html>

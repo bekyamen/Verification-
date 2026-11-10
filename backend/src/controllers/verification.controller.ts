@@ -197,6 +197,9 @@ function getRangeStartEat(range: string): Date | null {
 
 export const getVerificationHistory = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+
     const context = await resolveBranchAndCashier(req);
     if (!context) {
       res.status(401).json({ error: 'Missing cashier or branch context.' });
@@ -215,7 +218,7 @@ export const getVerificationHistory = async (req: AuthenticatedRequest, res: Res
       ...(rangeStart ? { verifiedAt: { gte: rangeStart } } : {}),
     };
 
-    const [grouped, recentRows] = await Promise.all([
+    const [grouped, recentByCreated, recentByVerified] = await Promise.all([
       prisma.verificationRecord.groupBy({
         by: ['provider'],
         where: summaryWhere,
@@ -225,6 +228,24 @@ export const getVerificationHistory = async (req: AuthenticatedRequest, res: Res
       prisma.verificationRecord.findMany({
         where: { branchId: context.branchId },
         orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          provider: true,
+          txnReference: true,
+          amount: true,
+          expectedAmount: true,
+          payerName: true,
+          payerPhone: true,
+          receivingAccount: true,
+          status: true,
+          verifiedAt: true,
+          createdAt: true,
+        },
+      }),
+      prisma.verificationRecord.findMany({
+        where: { branchId: context.branchId, verifiedAt: { not: null } },
+        orderBy: { verifiedAt: 'desc' },
         take: limit,
         select: {
           id: true,
@@ -254,7 +275,20 @@ export const getVerificationHistory = async (req: AuthenticatedRequest, res: Res
       byProvider[row.provider] = { amount: amt, count: cnt };
     }
 
-    const recent = recentRows.map((r) => ({
+    // Merge & sort by most recent activity timestamp (verifiedAt if present, else createdAt)
+    const seenIds = new Set<string>();
+    const mergedRows = [...recentByVerified, ...recentByCreated].filter((r) => {
+      if (seenIds.has(r.id)) return false;
+      seenIds.add(r.id);
+      return true;
+    });
+    mergedRows.sort((a, b) => {
+      const ta = Math.max(a.verifiedAt ? a.verifiedAt.getTime() : 0, a.createdAt.getTime());
+      const tb = Math.max(b.verifiedAt ? b.verifiedAt.getTime() : 0, b.createdAt.getTime());
+      return tb - ta;
+    });
+
+    const recent = mergedRows.slice(0, limit).map((r) => ({
       id: r.id,
       provider: r.provider,
       txnReference: r.txnReference,

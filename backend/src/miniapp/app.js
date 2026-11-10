@@ -14,13 +14,33 @@ if (tg) {
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
-let _token        = localStorage.getItem('cf_token') || null;
-let _tgInitData   = tg?.initData || '';
-let _tgUser       = tg?.initDataUnsafe?.user || null;
-let _profile      = null;
-let _accounts     = [];
-let _cashiers     = [];
-let _currentNav   = 'home';
+let _token         = localStorage.getItem('cf_token') || null;
+let _tgInitData    = tg?.initData || '';
+let _tgUser        = tg?.initDataUnsafe?.user || null;
+let _profile       = null;
+let _accounts      = [];
+let _cashiers      = [];
+let _currentNav    = 'home';
+let _currentScreen = 'loading';
+let _navStack      = [];
+let _handlingPop   = false;
+
+const _onTgBackClick = () => {
+  if (typeof window.handleAppBack === 'function') window.handleAppBack(false);
+};
+if (tg?.BackButton) {
+  try { tg.BackButton.onClick(_onTgBackClick); } catch (_) {}
+}
+
+window.addEventListener('popstate', () => {
+  const modalOpen = Boolean(document.getElementById('camera-scanner-modal')?.classList.contains('show'));
+  const sheetOpen = Boolean(document.querySelector('.modal-overlay.show'));
+  const rootTab = isAdminRole() ? 'home' : 'verify';
+  const isAuth = (_currentScreen === 'register' || _currentScreen === 'login' || _currentScreen === 'loading');
+  if (modalOpen || sheetOpen || (!isAuth && (_navStack.length > 0 || _currentScreen !== rootTab))) {
+    window.handleAppBack(true);
+  }
+});
 
 // ── API helpers ──────────────────────────────────────────────────────────────
 async function api(method, path, body, isFormData = false) {
@@ -33,6 +53,7 @@ async function api(method, path, body, isFormData = false) {
     res = await fetch('/api' + path, {
       method,
       headers,
+      cache: method === 'GET' ? 'no-store' : 'default',
       body: isFormData ? body : (body !== undefined ? JSON.stringify(body) : undefined),
     });
   } catch (err) {
@@ -72,8 +93,75 @@ function isAdminRole() {
   return _profile.isAdmin ?? ['OWNER', 'MANAGER', 'ADMIN'].includes(_profile.role);
 }
 
-// ── Screen routing ───────────────────────────────────────────────────────────
+// ── Screen routing & Back navigation ─────────────────────────────────────────
+window.pushBackHistoryState = function (tag) {
+  if (_handlingPop) return;
+  try {
+    history.pushState({ cfTag: tag }, '');
+  } catch (_) {}
+};
+
+window.syncTelegramBackButton = function () {
+  const scannerOpen = Boolean(document.getElementById('camera-scanner-modal')?.classList.contains('show'));
+  const sheetOpen = Boolean(document.querySelector('.modal-overlay.show'));
+  const isAuthScreen = (_currentScreen === 'register' || _currentScreen === 'login' || _currentScreen === 'loading');
+  const rootTab = isAdminRole() ? 'home' : 'verify';
+  const canGoBackScreen = !isAuthScreen && (_navStack.length > 0 || _currentScreen !== rootTab);
+
+  // Sync optional visible Back button on Verify top bar
+  const vpBackBtn = document.getElementById('vp-back-btn');
+  if (vpBackBtn) {
+    vpBackBtn.style.display = (_currentScreen === 'verify' && canGoBackScreen) ? 'inline-flex' : 'none';
+  }
+
+  if (tg?.BackButton) {
+    try {
+      if (scannerOpen || sheetOpen || canGoBackScreen) {
+        tg.BackButton.show();
+      } else {
+        tg.BackButton.hide();
+      }
+    } catch (_) {}
+  }
+};
+
+window.handleAppBack = function (fromPopState = false) {
+  const scannerModal = document.getElementById('camera-scanner-modal');
+  if (scannerModal && scannerModal.classList.contains('show')) {
+    const scStep = typeof window.getScannerStep === 'function' ? window.getScannerStep() : 'camera';
+    if (scStep === 'preview' && typeof window.retakeScannerPhoto === 'function') {
+      window.retakeScannerPhoto();
+      if (fromPopState) window.pushBackHistoryState('scanner');
+    } else if (typeof window.closeCameraScanner === 'function') {
+      window.closeCameraScanner();
+    }
+    return;
+  }
+
+  const openSheets = document.querySelectorAll('.modal-overlay.show');
+  if (openSheets.length > 0) {
+    openSheets.forEach((m) => m.classList.remove('show'));
+    window.syncTelegramBackButton();
+    return;
+  }
+
+  const isAuthScreen = (_currentScreen === 'register' || _currentScreen === 'login' || _currentScreen === 'loading');
+  if (isAuthScreen) return;
+
+  const rootTab = isAdminRole() ? 'home' : 'verify';
+  const prevTab = _navStack.length > 0 ? _navStack.pop() : (_currentScreen !== rootTab ? rootTab : null);
+  if (prevTab) {
+    _handlingPop = fromPopState;
+    navTo(prevTab, { isBack: true }).finally(() => {
+      _handlingPop = false;
+    });
+  } else {
+    window.syncTelegramBackButton();
+  }
+};
+
 function showScreen(name) {
+  _currentScreen = name;
   if (name !== 'verify' && document.getElementById('camera-scanner-modal')?.classList.contains('show')) {
     if (typeof window.closeCameraScanner === 'function') window.closeCameraScanner();
   }
@@ -85,21 +173,11 @@ function showScreen(name) {
   const nav = document.getElementById('bottom-nav');
   if (nav) nav.classList.toggle('visible', !isAuthScreen);
 
-  // Configure bottom nav items based on role
   if (!isAuthScreen) {
     updateBottomNavVisibility();
   }
 
-  // Telegram BackButton
-  if (tg) {
-    if (!isAuthScreen && name !== 'home' && name !== 'verify') {
-      tg.BackButton.show();
-      tg.BackButton.onClick(() => navTo(isAdminRole() ? 'home' : 'verify'));
-    } else {
-      tg.BackButton.hide();
-    }
-  }
-
+  window.syncTelegramBackButton();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -115,7 +193,7 @@ function updateBottomNavVisibility() {
 }
 
 // ── Nav tabs ─────────────────────────────────────────────────────────────────
-async function navTo(tab) {
+async function navTo(tab, opts = {}) {
   const isAdmin = isAdminRole();
 
   // If cashier tries to open admin tabs, guard it
@@ -123,6 +201,20 @@ async function navTo(tab) {
     haptic('warning');
     showScreen('forbidden');
     return;
+  }
+
+  const rootTab = isAdmin ? 'home' : 'verify';
+  if (!opts.isBack) {
+    if (tab === rootTab) {
+      _navStack = [];
+    } else if (_currentNav && _currentNav !== tab && _currentScreen !== 'loading' && _currentScreen !== 'login' && _currentScreen !== 'register') {
+      if (_navStack[_navStack.length - 1] !== _currentNav) {
+        _navStack.push(_currentNav);
+      }
+      window.pushBackHistoryState(tab);
+    } else if (tab !== rootTab) {
+      window.pushBackHistoryState(tab);
+    }
   }
 
   _currentNav = tab;
@@ -662,14 +754,104 @@ function renderRecentTransactions(items) {
   }).join('');
 }
 
+let _verifySummary = { totalAmount: 0, totalCount: 0, byProvider: {} };
+let _recentHistoryItems = [];
+let _hasLoadedHistory = false;
+
+function upsertRecentVerificationInstant(result) {
+  if (!result || !result.status) return;
+  const prov = String(result.provider || '').toUpperCase();
+  const ref = result.txnReference ? String(result.txnReference) : '';
+  // Skip purely unreadable failed OCR without reference/provider, OR record valid/duplicate/mismatch/failed checks with ref
+  if (!ref && result.status !== 'VERIFIED') return;
+
+  const existingIdx = _recentHistoryItems.findIndex(
+    (item) =>
+      (result.id && item.id === result.id) ||
+      (ref && item.txnReference === ref && String(item.provider).toUpperCase() === (prov || 'CBE'))
+  );
+  const existingItem = existingIdx >= 0 ? _recentHistoryItems[existingIdx] : null;
+  const wasAlreadyVerified = Boolean(existingItem && existingItem.status === 'VERIFIED');
+
+  const nowIso = new Date().toISOString();
+  const amountNum = Number(result.amount || 0);
+  const nextItem = {
+    id: result.id || existingItem?.id || `local-${Date.now()}`,
+    provider: prov && prov !== 'UNKNOWN' ? prov : (existingItem?.provider || 'CBE'),
+    txnReference: ref || existingItem?.txnReference || '—',
+    amount: Number.isFinite(amountNum) ? amountNum : 0,
+    expectedAmount: result.expectedAmount !== undefined && result.expectedAmount !== null ? Number(result.expectedAmount) : null,
+    payerName: result.payerName || existingItem?.payerName || null,
+    payerPhone: result.payerPhone || existingItem?.payerPhone || null,
+    receivingAccount: result.receivingAccount || existingItem?.receivingAccount || null,
+    status: result.status,
+    verifiedAt: result.verifiedAt || (result.status === 'VERIFIED' ? nowIso : existingItem?.verifiedAt || null),
+    createdAt: existingItem?.createdAt || nowIso,
+  };
+
+  const nextList = _recentHistoryItems.filter((_, idx) => idx !== existingIdx);
+  nextList.unshift(nextItem);
+  _recentHistoryItems = nextList.slice(0, 15);
+  _hasLoadedHistory = true;
+
+  if (result.status === 'VERIFIED' && !wasAlreadyVerified && nextItem.amount > 0) {
+    const pKey = nextItem.provider;
+    const prevProv = _verifySummary.byProvider?.[pKey] || { amount: 0, count: 0 };
+    _verifySummary = {
+      totalAmount: Number(_verifySummary.totalAmount || 0) + nextItem.amount,
+      totalCount: Number(_verifySummary.totalCount || 0) + 1,
+      byProvider: {
+        ...(_verifySummary.byProvider || {}),
+        [pKey]: {
+          amount: Number(prevProv.amount || 0) + nextItem.amount,
+          count: Number(prevProv.count || 0) + 1,
+        },
+      },
+    };
+  }
+
+  renderVerifyRing(_verifySummary);
+  renderRecentTransactions(_recentHistoryItems);
+}
+
 async function loadVerifyHistory() {
-  const { ok, data } = await api('GET', `/verify/history?range=${encodeURIComponent(_verifyRange)}&limit=15`);
+  const { ok, data } = await api(
+    'GET',
+    `/verify/history?range=${encodeURIComponent(_verifyRange)}&limit=15&_t=${Date.now()}`
+  );
   if (!ok || !data) {
-    renderRecentTransactions([]);
+    if (!_hasLoadedHistory) renderRecentTransactions([]);
     return;
   }
-  renderVerifyRing(data.summary);
-  renderRecentTransactions(data.recent || []);
+
+  const serverRecent = Array.isArray(data.recent) ? data.recent : [];
+  _hasLoadedHistory = true;
+
+  // Reconcile server data while never dropping an optimistic verification just recorded seconds ago
+  const serverKeys = new Set(
+    serverRecent.map((item) => `${String(item.provider).toUpperCase()}:${item.txnReference}`)
+  );
+  const pendingLocal = _recentHistoryItems.filter(
+    (item) =>
+      String(item.id).startsWith('local-') &&
+      Date.now() - new Date(item.createdAt).getTime() < 60000 &&
+      !serverKeys.has(`${String(item.provider).toUpperCase()}:${item.txnReference}`)
+  );
+
+  _recentHistoryItems = [...pendingLocal, ...serverRecent].slice(0, 15);
+  _verifySummary = data.summary || { totalAmount: 0, totalCount: 0, byProvider: {} };
+
+  if (pendingLocal.length > 0) {
+    for (const p of pendingLocal) {
+      if (p.status === 'VERIFIED' && p.amount > 0) {
+        _verifySummary.totalAmount = Number(_verifySummary.totalAmount || 0) + p.amount;
+        _verifySummary.totalCount = Number(_verifySummary.totalCount || 0) + 1;
+      }
+    }
+  }
+
+  renderVerifyRing(_verifySummary);
+  renderRecentTransactions(_recentHistoryItems);
 }
 
 function dismissVerifyResult() {
@@ -784,6 +966,7 @@ function renderVerifyResult(result) {
   }
 
   details.innerHTML = html;
+  upsertRecentVerificationInstant(result);
   loadVerifyHistory();
 }
 
@@ -1302,6 +1485,10 @@ async function logout() {
   try { await api('POST', '/auth/logout'); } catch (e) {}
   _token = null;
   _profile = null;
+  _navStack = [];
+  _recentHistoryItems = [];
+  _verifySummary = { totalAmount: 0, totalCount: 0, byProvider: {} };
+  _hasLoadedHistory = false;
   localStorage.removeItem('cf_token');
   toast('Signed out successfully');
   showScreen('login');
@@ -1312,11 +1499,14 @@ function openModal(id) {
   haptic('light');
   const m = document.getElementById(id);
   if (m) m.classList.add('show');
+  if (typeof window.pushBackHistoryState === 'function') window.pushBackHistoryState(id);
+  if (typeof window.syncTelegramBackButton === 'function') window.syncTelegramBackButton();
 }
 
 function closeModal(id) {
   const m = document.getElementById(id);
   if (m) m.classList.remove('show');
+  if (typeof window.syncTelegramBackButton === 'function') window.syncTelegramBackButton();
 }
 
 function closeModalOnBg(e, id) {

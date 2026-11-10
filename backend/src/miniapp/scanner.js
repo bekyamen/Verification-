@@ -1020,17 +1020,24 @@
     setScannerStep('camera');
     _facingMode = 'environment';
 
-    // Hook Telegram BackButton so pressing back exits camera safely
-    const tgApp = window.Telegram?.WebApp;
-    if (tgApp?.BackButton) {
-      if (_tgBackHandler) {
-        try { tgApp.BackButton.offClick(_tgBackHandler); } catch (_) {}
+    // Hook Telegram BackButton + browser history so pressing back exits camera safely
+    if (typeof window.pushBackHistoryState === 'function') {
+      window.pushBackHistoryState('scanner');
+    }
+    if (typeof window.syncTelegramBackButton === 'function') {
+      window.syncTelegramBackButton();
+    } else {
+      const tgApp = window.Telegram?.WebApp;
+      if (tgApp?.BackButton) {
+        if (_tgBackHandler) {
+          try { tgApp.BackButton.offClick(_tgBackHandler); } catch (_) {}
+        }
+        _tgBackHandler = () => window.closeCameraScanner();
+        try {
+          tgApp.BackButton.show();
+          tgApp.BackButton.onClick(_tgBackHandler);
+        } catch (_) {}
       }
-      _tgBackHandler = () => window.closeCameraScanner();
-      try {
-        tgApp.BackButton.show();
-        tgApp.BackButton.onClick(_tgBackHandler);
-      } catch (_) {}
     }
 
     // Immediate synchronous fallback if live getUserMedia doesn't exist
@@ -1040,6 +1047,10 @@
     }
 
     await startScannerCamera(_facingMode);
+  };
+
+  window.getScannerStep = function () {
+    return _currentStep;
   };
 
   window.closeCameraScanner = function () {
@@ -1054,14 +1065,18 @@
     const modal = el('camera-scanner-modal');
     if (modal) modal.classList.remove('show');
 
-    // Restore Telegram BackButton safely
-    const tgApp = window.Telegram?.WebApp;
-    if (tgApp?.BackButton && _tgBackHandler) {
-      try { tgApp.BackButton.offClick(_tgBackHandler); } catch (_) {}
-      _tgBackHandler = null;
-      const onVerifyOrHome = (typeof _currentNav !== 'undefined' && (_currentNav === 'home' || _currentNav === 'verify'));
-      if (onVerifyOrHome) {
-        try { tgApp.BackButton.hide(); } catch (_) {}
+    // Restore Telegram BackButton safely via centralized app controller
+    if (typeof window.syncTelegramBackButton === 'function') {
+      window.syncTelegramBackButton();
+    } else {
+      const tgApp = window.Telegram?.WebApp;
+      if (tgApp?.BackButton && _tgBackHandler) {
+        try { tgApp.BackButton.offClick(_tgBackHandler); } catch (_) {}
+        _tgBackHandler = null;
+        const onVerifyOrHome = (typeof _currentNav !== 'undefined' && (_currentNav === 'home' || _currentNav === 'verify'));
+        if (onVerifyOrHome) {
+          try { tgApp.BackButton.hide(); } catch (_) {}
+        }
       }
     }
   };
