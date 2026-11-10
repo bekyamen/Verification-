@@ -28,6 +28,7 @@ export interface ImageVerificationOptions {
   cashierId: string;
   expectedAmount?: number;
   provider?: string;
+  onProgress?: (stage: 'reading' | 'checking_bank') => void;
 }
 
 export interface VerificationOutcome {
@@ -38,8 +39,9 @@ export interface VerificationOutcome {
 export async function runImageVerification(
   opts: ImageVerificationOptions
 ): Promise<VerificationOutcome> {
-  const { buffer, mimetype, branchId, cashierId, expectedAmount, provider: explicitProvider } = opts;
+  const { buffer, mimetype, branchId, cashierId, expectedAmount, provider: explicitProvider, onProgress } = opts;
   const t0 = Date.now();
+  try { onProgress?.('reading'); } catch {}
 
   // ── Step 1: Start OCR immediately so it overlaps with QR decode ─────────────
   let ocrDoneMs = -1;
@@ -70,6 +72,7 @@ export async function runImageVerification(
 
   // ── Step 3: Fast-path — If QR gives a usable reference (and not disabled), verify directly ──
   if (qrHasUsableRef && !isDoomedCbeToken) {
+    try { onProgress?.('checking_bank'); } catch {}
     const qrProvider = (qrNormalized!.provider === 'UNKNOWN' ? explicitProvider : qrNormalized!.provider) || 'UNKNOWN';
     const outcome = await processVerification({
       branchId,
@@ -164,6 +167,7 @@ export async function runImageVerification(
   }
 
   // ── Step 6: Single verification call on OCR path ─────────────────────────────
+  try { onProgress?.('checking_bank'); } catch {}
   const combinedRawText = [qrValue, ocrText].filter(Boolean).join('\n');
   const normalized = dissectPayload(combinedRawText);
 

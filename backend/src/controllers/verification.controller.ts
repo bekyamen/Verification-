@@ -52,6 +52,16 @@ export const verifyTextPayload = async (req: AuthenticatedRequest, res: Response
 };
 
 export const verifyImagePayload = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const wantsStream =
+    req.query.stream === '1' ||
+    String(req.headers.accept || '').includes('application/x-ndjson');
+
+  const sendStreamEvent = (payload: Record<string, unknown>) => {
+    if (!res.writableEnded) {
+      res.write(JSON.stringify(payload) + '\n');
+    }
+  };
+
   try {
     const context = await resolveBranchAndCashier(req);
     if (!context) {
@@ -70,6 +80,16 @@ export const verifyImagePayload = async (req: AuthenticatedRequest, res: Respons
     }
     const provider = req.body.provider ? String(req.body.provider).trim().toUpperCase() : undefined;
 
+    if (wantsStream) {
+      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.status(200);
+      if (typeof (res as any).flushHeaders === 'function') {
+        (res as any).flushHeaders();
+      }
+    }
+
     const outcome = await runImageVerification({
       buffer: req.file.buffer,
       mimetype: req.file.mimetype,
@@ -77,11 +97,26 @@ export const verifyImagePayload = async (req: AuthenticatedRequest, res: Respons
       cashierId: context.cashierId,
       expectedAmount,
       provider,
+      onProgress: wantsStream ? (stage) => sendStreamEvent({ stage }) : undefined,
     });
 
-    res.status(outcome.status).json(outcome.result);
+    if (wantsStream) {
+      sendStreamEvent({ done: true, httpStatus: outcome.status, result: outcome.result });
+      res.end();
+    } else {
+      res.status(outcome.status).json(outcome.result);
+    }
   } catch (error: any) {
-    res.status(500).json({ error: 'File processing or verification failed', details: error.message });
+    if (wantsStream && res.headersSent) {
+      sendStreamEvent({
+        done: true,
+        httpStatus: 500,
+        result: { status: 'FAILED', message: 'Verification failed. Please try again.' },
+      });
+      res.end();
+    } else {
+      res.status(500).json({ error: 'File processing or verification failed', details: error.message });
+    }
   }
 };
 

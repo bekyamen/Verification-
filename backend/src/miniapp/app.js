@@ -74,6 +74,9 @@ function isAdminRole() {
 
 // ── Screen routing ───────────────────────────────────────────────────────────
 function showScreen(name) {
+  if (name !== 'verify' && document.getElementById('camera-scanner-modal')?.classList.contains('show')) {
+    if (typeof window.closeCameraScanner === 'function') window.closeCameraScanner();
+  }
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   const target = document.getElementById(`screen-${name}`);
   if (target) target.classList.add('active');
@@ -425,10 +428,6 @@ async function loadHomeScreen() {
 // ── VERIFY PAYMENT SCREEN ────────────────────────────────────────────────────
 let _activeVerifyTab = 'scan';
 let _selectedProvider = 'CBE';
-let _scannerStream = null;
-let _scannerFacingMode = 'environment';
-let _scannerCapturedBlob = null;
-let _scannerPreviewUrl = null;
 
 function selectMiniappProvider(p) {
   _selectedProvider = p;
@@ -456,15 +455,10 @@ function selectMiniappProvider(p) {
     imgTb.style.border = !isCbe ? '2px solid var(--button)' : '1px solid var(--glass-border)';
   }
 
-  // Update modal buttons
-  const modCbe = document.getElementById('modal-prov-cbe');
-  const modTb = document.getElementById('modal-prov-telebirr');
-  if (modCbe && modTb) {
-    modCbe.style.background = isCbe ? 'var(--button)' : 'transparent';
-    modCbe.style.color = isCbe ? '#fff' : 'var(--hint)';
-    modTb.style.background = !isCbe ? 'var(--button)' : 'transparent';
-    modTb.style.color = !isCbe ? '#fff' : 'var(--hint)';
-  }
+  // Update scanner & preview provider pills
+  document.querySelectorAll('.sc-provider-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.provider === p);
+  });
 
   // Sync with manual dropdown
   const manualSel = document.getElementById('vmanual-provider');
@@ -488,243 +482,12 @@ function switchVerifyTab(tab, autoLaunchCamera = false) {
     if (btn) btn.classList.toggle('active', t === tab);
     if (form) form.style.display = (t === tab) ? 'block' : 'none';
   });
-  if (tab === 'scan' && autoLaunchCamera) {
-    openCameraScanner();
+  if (tab === 'scan' && autoLaunchCamera && typeof window.openCameraScanner === 'function') {
+    window.openCameraScanner();
   }
 }
 
-// Client-side image compression
-async function compressImageClient(fileOrBlob, maxDim = 1280, quality = 0.82) {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(fileOrBlob);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      let w = img.naturalWidth || img.width;
-      let h = img.naturalHeight || img.height;
-      if (w > maxDim || h > maxDim) {
-        if (w >= h) {
-          h = Math.round((h * maxDim) / w);
-          w = maxDim;
-        } else {
-          w = Math.round((w * maxDim) / h);
-          h = maxDim;
-        }
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, w);
-      canvas.height = Math.max(1, h);
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return resolve(fileOrBlob);
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0, w, h);
-      canvas.toBlob((blob) => {
-        resolve(blob || fileOrBlob);
-      }, 'image/jpeg', quality);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve(fileOrBlob);
-    };
-    img.src = url;
-  });
-}
-
-// Live Camera Scanner Lifecycle
-async function openCameraScanner() {
-  haptic('selection');
-  const modal = document.getElementById('camera-scanner-modal');
-  if (!modal) return;
-  modal.classList.add('show');
-  setScannerStep('camera');
-  await startScannerCamera(_scannerFacingMode);
-}
-
-function closeCameraScanner() {
-  haptic('light');
-  stopScannerCamera();
-  if (_scannerPreviewUrl) {
-    URL.revokeObjectURL(_scannerPreviewUrl);
-    _scannerPreviewUrl = null;
-  }
-  _scannerCapturedBlob = null;
-  const modal = document.getElementById('camera-scanner-modal');
-  if (modal) modal.classList.remove('show');
-}
-
-function stopScannerCamera() {
-  if (_scannerStream) {
-    _scannerStream.getTracks().forEach(t => {
-      try { t.stop(); } catch(e) {}
-    });
-    _scannerStream = null;
-  }
-  const video = document.getElementById('scanner-video');
-  if (video) video.srcObject = null;
-}
-
-async function startScannerCamera(mode) {
-  stopScannerCamera();
-  const errorBox = document.getElementById('scanner-error-box');
-  const frame = document.getElementById('scanner-frame');
-  const controls = document.getElementById('scanner-camera-controls');
-  const video = document.getElementById('scanner-video');
-  const switchBtn = document.getElementById('scanner-switch-btn');
-
-  if (errorBox) errorBox.style.display = 'none';
-  if (frame) frame.style.display = 'flex';
-  if (controls) controls.style.display = 'flex';
-  if (switchBtn) switchBtn.style.display = 'block';
-
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    showScannerError('Camera streaming is not supported on this browser/client. Use the native camera button below.');
-    return;
-  }
-
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: mode }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-      audio: false
-    });
-    _scannerStream = stream;
-    if (video) {
-      video.srcObject = stream;
-      try { await video.play(); } catch(e) {}
-    }
-  } catch (err) {
-    console.warn('Camera error:', err);
-    showScannerError('Camera permission blocked or unavailable. Please use the native camera option below.');
-  }
-}
-
-function showScannerError(msg) {
-  const errorBox = document.getElementById('scanner-error-box');
-  const errorMsg = document.getElementById('scanner-error-msg');
-  const frame = document.getElementById('scanner-frame');
-  const controls = document.getElementById('scanner-camera-controls');
-  const switchBtn = document.getElementById('scanner-switch-btn');
-
-  if (errorBox) errorBox.style.display = 'block';
-  if (errorMsg) errorMsg.textContent = msg;
-  if (frame) frame.style.display = 'none';
-  if (controls) controls.style.display = 'none';
-  if (switchBtn) switchBtn.style.display = 'none';
-}
-
-async function switchScannerCamera() {
-  haptic('selection');
-  _scannerFacingMode = (_scannerFacingMode === 'environment') ? 'user' : 'environment';
-  await startScannerCamera(_scannerFacingMode);
-}
-
-function setScannerStep(step) {
-  const camView = document.getElementById('scanner-view-camera');
-  const prevView = document.getElementById('scanner-view-preview');
-  const vrfView = document.getElementById('scanner-view-verifying');
-  const title = document.getElementById('scanner-header-title');
-
-  if (camView) camView.style.display = (step === 'camera') ? 'flex' : 'none';
-  if (prevView) prevView.style.display = (step === 'preview') ? 'flex' : 'none';
-  if (vrfView) vrfView.style.display = (step === 'verifying') ? 'flex' : 'none';
-
-  if (title) {
-    if (step === 'camera') title.textContent = 'Scan Receipt';
-    else if (step === 'preview') title.textContent = 'Preview Receipt';
-    else if (step === 'verifying') title.textContent = 'Verifying...';
-  }
-}
-
-async function captureScannerPhoto() {
-  const video = document.getElementById('scanner-video');
-  if (!video || !video.videoWidth) {
-    toast('Camera is not ready yet');
-    return;
-  }
-  haptic('medium');
-
-  const canvas = document.createElement('canvas');
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-  stopScannerCamera();
-
-  canvas.toBlob(async (rawBlob) => {
-    if (!rawBlob) {
-      toast('Failed to capture frame');
-      startScannerCamera(_scannerFacingMode);
-      return;
-    }
-    const compressed = await compressImageClient(rawBlob, 1280, 0.82);
-    _scannerCapturedBlob = compressed;
-
-    if (_scannerPreviewUrl) URL.revokeObjectURL(_scannerPreviewUrl);
-    _scannerPreviewUrl = URL.createObjectURL(compressed);
-
-    const img = document.getElementById('scanner-preview-img');
-    if (img) img.src = _scannerPreviewUrl;
-
-    setScannerStep('preview');
-  }, 'image/jpeg', 0.92);
-}
-
-function retakeScannerPhoto() {
-  haptic('light');
-  if (_scannerPreviewUrl) {
-    URL.revokeObjectURL(_scannerPreviewUrl);
-    _scannerPreviewUrl = null;
-  }
-  _scannerCapturedBlob = null;
-  setScannerStep('camera');
-  startScannerCamera(_scannerFacingMode);
-}
-
-async function handleScannerNativeFile(event) {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  haptic('selection');
-  stopScannerCamera();
-
-  toast('Optimizing photo...');
-  const compressed = await compressImageClient(file, 1280, 0.82);
-  _scannerCapturedBlob = compressed;
-
-  if (_scannerPreviewUrl) URL.revokeObjectURL(_scannerPreviewUrl);
-  _scannerPreviewUrl = URL.createObjectURL(compressed);
-
-  const img = document.getElementById('scanner-preview-img');
-  if (img) img.src = _scannerPreviewUrl;
-
-  setScannerStep('preview');
-}
-
-async function verifyScannerPhoto() {
-  if (!_scannerCapturedBlob) {
-    toast('No photo captured');
-    return;
-  }
-
-  haptic('medium');
-  setScannerStep('verifying');
-
-  const fd = new FormData();
-  fd.append('receipt', _scannerCapturedBlob, 'receipt.jpg');
-  fd.append('provider', _selectedProvider);
-
-  const { ok, data } = await api('POST', '/verify/image', fd, true);
-
-  closeCameraScanner();
-
-  if (!ok) {
-    toast('❌ ' + (data?.error || 'Verification failed'));
-    renderVerifyResult({ status: 'FAILED', message: data?.error || 'Could not verify receipt' });
-    return;
-  }
-
-  renderVerifyResult(data);
-}
+// Live camera scanner implementation lives in scanner.js (window.openCameraScanner, etc.)
 
 function renderVerifyResult(result) {
   const card = document.getElementById('vresult-card');
@@ -875,14 +638,18 @@ async function submitVerifyImage() {
 
   setLoading('vimage-btn', true);
   toast('Optimizing image...');
-  const compressed = await compressImageClient(file, 1280, 0.82);
+  const isPdf = file.type === 'application/pdf';
+  const payloadBlob = isPdf
+    ? file
+    : (typeof compressImageClient === 'function' ? await compressImageClient(file, 1400, 0.85) : file);
 
   const fd = new FormData();
-  fd.append('receipt', compressed, 'receipt.jpg');
+  fd.append('receipt', payloadBlob, isPdf ? (file.name || 'receipt.pdf') : 'receipt.jpg');
   fd.append('provider', _selectedProvider);
 
   const { ok, data } = await api('POST', '/verify/image', fd, true);
   setLoading('vimage-btn', false);
+  fileInput.value = '';
 
   if (!ok) {
     toast('❌ ' + (data?.error || 'Image verification failed'));

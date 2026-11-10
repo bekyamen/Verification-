@@ -2,10 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="description" content="CheckFlow ET — Ethiopian Payment Verification (CBE & Telebirr)" />
   <title>CheckFlow ET</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="scanner.css?v=2" />
   <style>
     /* ── Telegram theme tokens & glassmorphism ───────────────────────────── */
     :root {
@@ -242,29 +243,13 @@
     .modal-btn-row { display: flex; gap: 10px; margin-top: 16px; }
     .modal-btn-row .btn { flex: 1; }
 
-    /* ── Camera Scanner Modal ───────────────────────────────────────────── */
-    #camera-scanner-modal {
-      display: none;
-      position: fixed; inset: 0; z-index: 1000;
-      background: #000; color: #fff;
-      flex-direction: column; overflow: hidden;
-    }
-    #camera-scanner-modal.show { display: flex; }
-    .camera-corner {
-      position: absolute; width: 30px; height: 30px; border-color: var(--button); border-style: solid;
-    }
-    .camera-corner.tl { top: -2px; left: -2px; border-width: 4px 0 0 4px; border-top-left-radius: 14px; }
-    .camera-corner.tr { top: -2px; right: -2px; border-width: 4px 4px 0 0; border-top-right-radius: 14px; }
-    .camera-corner.bl { bottom: -2px; left: -2px; border-width: 0 0 4px 4px; border-bottom-left-radius: 14px; }
-    .camera-corner.br { bottom: -2px; right: -2px; border-width: 0 4px 4px 0; border-bottom-right-radius: 14px; }
-
     /* ── Toast ──────────────────────────────────────────────────────────── */
     #toast {
-      position: fixed; top: 16px; left: 50%; transform: translateX(-50%) translateY(-60px);
+      position: fixed; top: calc(16px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%) translateY(-80px);
       background: rgba(30, 30, 32, 0.95); backdrop-filter: blur(14px);
       border: 1px solid var(--glass-border); color: #fff;
       padding: 10px 18px; border-radius: 24px; font-size: 14px; font-weight: 600;
-      z-index: 200; pointer-events: none; opacity: 0; transition: all .25s ease;
+      z-index: 1200; pointer-events: none; opacity: 0; transition: all .25s ease;
       white-space: nowrap; max-width: 90vw; overflow: hidden; text-overflow: ellipsis;
       box-shadow: 0 8px 30px rgba(0,0,0,0.5);
     }
@@ -789,75 +774,148 @@
 </div>
 
 <!-- Fullscreen Camera Scanner Modal -->
-<div id="camera-scanner-modal">
-  <input id="scanner-native-input" type="file" accept="image/*" capture="environment" style="display:none;" onchange="handleScannerNativeFile(event)" />
-  
-  <!-- Top Bar -->
-  <div style="position: absolute; top: 0; left: 0; right: 0; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; z-index: 20; background: linear-gradient(to bottom, rgba(0,0,0,0.85), transparent);">
-    <button onclick="closeCameraScanner()" style="width: 40px; height: 40px; border-radius: 50%; background: rgba(30,30,32,0.8); border: 1px solid rgba(255,255,255,0.2); color: #fff; font-size: 18px; cursor: pointer;">✕</button>
-    <div style="display: flex; gap: 4px; background: rgba(30,30,32,0.85); padding: 3px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.2);">
-      <button id="modal-prov-cbe" type="button" style="padding: 5px 12px; border-radius: 16px; border: none; font-size: 12px; font-weight: 700; background: var(--button); color: #fff; cursor: pointer;" onclick="selectMiniappProvider('CBE')">🏦 CBE</button>
-      <button id="modal-prov-telebirr" type="button" style="padding: 5px 12px; border-radius: 16px; border: none; font-size: 12px; font-weight: 700; background: transparent; color: var(--hint); cursor: pointer;" onclick="selectMiniappProvider('TELEBIRR')">📱 Telebirr</button>
-    </div>
-    <button id="scanner-switch-btn" onclick="switchScannerCamera()" style="width: 40px; height: 40px; border-radius: 50%; background: rgba(30,30,32,0.8); border: 1px solid rgba(255,255,255,0.2); color: #fff; font-size: 18px; cursor: pointer;">🔄</button>
-  </div>
+<div id="camera-scanner-modal" role="dialog" aria-modal="true" aria-label="Scan Receipt Camera">
+  <input id="scanner-native-camera-input" type="file" accept="image/*" capture="environment" style="display:none;" onchange="handleScannerNativeFile(event)" />
+  <input id="scanner-gallery-input" type="file" accept="image/*" style="display:none;" onchange="handleScannerNativeFile(event)" />
 
   <!-- Live Camera Viewport -->
-  <div id="scanner-view-camera" style="flex: 1; position: relative; display: flex; align-items: center; justify-content: center; background: #000;">
-    <video id="scanner-video" playsinline autoplay muted style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;"></video>
-    
-    <!-- Viewfinder Frame -->
-    <div id="scanner-frame" style="position: relative; width: 80%; max-width: 320px; aspect-ratio: 3/4; border-radius: 18px; box-shadow: 0 0 0 9999px rgba(0,0,0,0.55); pointer-events: none; z-index: 5; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 16px;">
-      <div class="camera-corner tl"></div>
-      <div class="camera-corner tr"></div>
-      <div class="camera-corner bl"></div>
-      <div class="camera-corner br"></div>
-      <div style="background: rgba(0,0,0,0.7); padding: 8px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; border: 1px solid rgba(255,255,255,0.2);">
-        Place the receipt inside the frame
+  <div id="scanner-view-camera" class="sc-view">
+    <video id="scanner-video" playsinline autoplay muted></video>
+    <div id="scanner-shutter-flash"></div>
+    <div id="scanner-focus-ring"></div>
+
+    <!-- Top Floating Bar -->
+    <div class="sc-top-bar">
+      <button type="button" class="sc-icon-btn" onclick="closeCameraScanner()" aria-label="Close camera">✕</button>
+
+      <div class="sc-provider-pill" role="group" aria-label="Bank provider">
+        <button id="modal-prov-cbe" data-provider="CBE" type="button" class="sc-provider-btn active" onclick="selectMiniappProvider('CBE')">🏦 CBE</button>
+        <button id="modal-prov-telebirr" data-provider="TELEBIRR" type="button" class="sc-provider-btn" onclick="selectMiniappProvider('TELEBIRR')">📱 Telebirr</button>
+      </div>
+
+      <div class="sc-top-slot">
+        <button id="scanner-flash-btn" type="button" class="sc-icon-btn" style="display:none;" onclick="toggleScannerFlash()" aria-label="Toggle flash" aria-pressed="false">⚡</button>
       </div>
     </div>
 
-    <!-- Fallback if camera error -->
-    <div id="scanner-error-box" style="display: none; padding: 30px 20px; text-align: center; z-index: 10; max-width: 340px;">
-      <div style="font-size: 36px; margin-bottom: 12px;">📷</div>
-      <h3 style="font-size: 18px; margin-bottom: 8px;">Camera Notice</h3>
-      <p id="scanner-error-msg" style="font-size: 13px; color: var(--hint); margin-bottom: 18px; line-height: 1.4;"></p>
-      <button class="btn" onclick="document.getElementById('scanner-native-input').click()" style="width: 100%; margin-bottom: 10px;">
-        📸 Take Photo with Native Camera
-      </button>
+    <!-- Center Stage: Hint + Giant Frame + Fallback Notice -->
+    <div id="scanner-stage">
+      <div id="scanner-hint-top">Fit the whole receipt inside the frame</div>
+
+      <div id="scanner-frame" class="frame-tall">
+        <div class="camera-corner tl"></div>
+        <div class="camera-corner tr"></div>
+        <div class="camera-corner bl"></div>
+        <div class="camera-corner br"></div>
+
+        <div id="scanner-starting-badge">
+          <div class="spinner"></div>
+          <span>Starting camera...</span>
+        </div>
+
+        <div id="scanner-quality-pill">Hold steady inside frame</div>
+      </div>
+
+      <!-- Permission Denied / Unavailable Fallback -->
+      <div id="scanner-error-box">
+        <div id="scanner-error-icon" style="font-size: 40px; margin-bottom: 10px;">📷</div>
+        <h3 id="scanner-error-title" style="font-size: 18px; font-weight: 800; margin-bottom: 8px;">Camera Notice</h3>
+        <p id="scanner-error-msg" style="font-size: 13px; color: var(--hint); line-height: 1.45;"></p>
+        <div class="sc-error-actions">
+          <button type="button" class="btn" onclick="openNativeCameraPicker()">📸 Take Photo with Camera</button>
+          <button type="button" class="btn secondary" onclick="openGalleryPicker()">🖼️ Choose from Photos</button>
+          <button id="scanner-retry-btn" type="button" class="btn ghost" onclick="retryScannerCamera()">🔄 Try Live Camera Again</button>
+        </div>
+      </div>
     </div>
 
-    <!-- Bottom Controls -->
-    <div id="scanner-camera-controls" style="position: absolute; bottom: 0; left: 0; right: 0; padding: 24px 20px; display: flex; align-items: center; justify-content: space-around; z-index: 20; background: linear-gradient(to top, rgba(0,0,0,0.85), transparent);">
-      <button onclick="document.getElementById('scanner-native-input').click()" style="width: 44px; height: 44px; border-radius: 50%; background: rgba(44,44,46,0.8); border: 1px solid rgba(255,255,255,0.2); font-size: 20px; cursor: pointer;">🖼️</button>
-      <button onclick="captureScannerPhoto()" style="width: 74px; height: 74px; border-radius: 50%; border: 4px solid #fff; background: transparent; padding: 4px; cursor: pointer;">
-        <div style="width: 100%; height: 100%; border-radius: 50%; background: #fff;"></div>
-      </button>
-      <div style="width: 44px;"></div>
+    <!-- Bottom Controls HUD -->
+    <div id="scanner-bottom-hud">
+      <!-- Shape & Auto-Capture Row -->
+      <div class="sc-quick-row">
+        <div class="sc-shape-group" role="group" aria-label="Frame shape">
+          <button id="scanner-shape-tall" type="button" class="sc-chip-btn active" onclick="setScannerFrameShape('tall')">📄 Tall receipt</button>
+          <button id="scanner-shape-screenshot" type="button" class="sc-chip-btn" onclick="setScannerFrameShape('screenshot')">📱 Screenshot</button>
+        </div>
+        <button id="scanner-auto-btn" type="button" class="sc-auto-btn" onclick="toggleScannerAutoCapture()" aria-pressed="false">✨ Auto: OFF</button>
+      </div>
+
+      <!-- Optional Hardware Zoom Slider -->
+      <div id="scanner-zoom-wrap">
+        <span style="font-size: 12px; color: var(--hint); font-weight: 700;">Zoom</span>
+        <input id="scanner-zoom-slider" type="range" min="1" max="3" step="0.1" value="1" oninput="onScannerZoomInput(this.value)" aria-label="Camera zoom" />
+        <span id="scanner-zoom-val">1.0x</span>
+      </div>
+
+      <!-- Shutter Bar -->
+      <div id="scanner-camera-controls">
+        <button type="button" class="sc-icon-btn" onclick="openGalleryPicker()" aria-label="Choose from gallery">🖼️</button>
+
+        <button id="scanner-capture-btn" type="button" onclick="captureScannerPhoto(false)" disabled aria-disabled="true" aria-label="Capture receipt photo">
+          <svg id="scanner-auto-ring" viewBox="0 0 92 92" style="display:none;">
+            <circle id="scanner-auto-ring-circle" cx="46" cy="46" r="42"></circle>
+          </svg>
+          <div id="scanner-capture-inner"></div>
+        </button>
+
+        <button id="scanner-switch-btn" type="button" class="sc-icon-btn" onclick="switchScannerCamera()" aria-label="Switch camera">🔄</button>
+      </div>
     </div>
   </div>
 
   <!-- Preview Viewport -->
-  <div id="scanner-view-preview" style="display: none; flex: 1; position: relative; flex-direction: column; background: #000;">
-    <div style="flex: 1; display: flex; align-items: center; justify-content: center; padding: 70px 16px 100px;">
-      <img id="scanner-preview-img" src="" alt="Receipt" style="max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 14px;" />
+  <div id="scanner-view-preview" class="sc-view">
+    <div class="sc-top-bar">
+      <button type="button" class="sc-icon-btn" onclick="closeCameraScanner()" aria-label="Close preview">✕</button>
+
+      <div class="sc-provider-pill" role="group" aria-label="Bank provider">
+        <button id="preview-prov-cbe" data-provider="CBE" type="button" class="sc-provider-btn active" onclick="selectMiniappProvider('CBE')">🏦 CBE</button>
+        <button id="preview-prov-telebirr" data-provider="TELEBIRR" type="button" class="sc-provider-btn" onclick="selectMiniappProvider('TELEBIRR')">📱 Telebirr</button>
+      </div>
+
+      <div class="sc-top-slot"></div>
     </div>
-    <div style="position: absolute; bottom: 0; left: 0; right: 0; padding: 20px; display: flex; gap: 12px; z-index: 20; background: linear-gradient(to top, rgba(0,0,0,0.95), transparent);">
-      <button class="btn ghost" onclick="retakeScannerPhoto()" style="flex: 1; border: 1px solid rgba(255,255,255,0.2);">🔄 Retake</button>
-      <button class="btn" id="scanner-verify-btn" onclick="verifyScannerPhoto()" style="flex: 2;">⚡ Verify Receipt</button>
+
+    <div class="sc-preview-stage">
+      <div id="scanner-preview-frame-box" class="sc-preview-frame-box frame-tall">
+        <img id="scanner-preview-img" alt="Captured receipt preview" />
+        <div class="camera-corner tl"></div>
+        <div class="camera-corner tr"></div>
+        <div class="camera-corner bl"></div>
+        <div class="camera-corner br"></div>
+      </div>
+    </div>
+
+    <div class="sc-preview-actions">
+      <button id="scanner-retake-btn" type="button" class="btn secondary" onclick="retakeScannerPhoto()" style="flex: 1;">🔄 Retake</button>
+      <button id="scanner-verify-btn" type="button" class="btn" onclick="verifyScannerPhoto()" style="flex: 1.5;">⚡ Verify</button>
     </div>
   </div>
 
-  <!-- Verifying Spinner View -->
-  <div id="scanner-view-verifying" style="display: none; flex: 1; flex-direction: column; align-items: center; justify-content: center; padding: 30px; text-align: center;">
-    <div class="spinner" style="width: 50px; height: 50px; border-width: 4px; margin-bottom: 20px;"></div>
-    <h3 style="font-size: 19px; font-weight: 700; margin-bottom: 8px;">Checking your receipt...</h3>
-    <p style="font-size: 13px; color: var(--hint); max-width: 260px;">Reading QR code, reference numbers, and validating with bank records.</p>
+  <!-- Step-by-Step Verifying View -->
+  <div id="scanner-view-verifying" class="sc-view">
+    <div class="sc-verify-card">
+      <div class="spinner" style="width: 48px; height: 48px; border-width: 4px; margin: 0 auto 16px;"></div>
+      <h3 style="font-size: 19px; font-weight: 800; margin-bottom: 4px;">Verifying Payment</h3>
+      <p style="font-size: 13px; color: var(--hint);">Please wait a moment</p>
+
+      <div class="sc-steps">
+        <div id="sc-step-reading" class="sc-step active">
+          <div class="sc-step-dot"></div>
+          <span>Reading receipt...</span>
+        </div>
+        <div id="sc-step-bank" class="sc-step">
+          <div class="sc-step-dot">2</div>
+          <span>Checking with the bank...</span>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
 <div id="toast"></div>
 
-<script src="app.js"></script>
+<script src="app.js?v=2"></script>
+<script src="scanner.js?v=2"></script>
 </body>
 </html>
