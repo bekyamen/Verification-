@@ -266,6 +266,163 @@
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       min-height: 80vh; gap: 14px; text-align: center;
     }
+
+    /* ── Verify Dashboard Page (matches clean dark fintech layout) ──────── */
+    #screen-verify {
+      background: #131922;
+      padding: calc(10px + env(safe-area-inset-top, 0px)) 16px calc(92px + env(safe-area-inset-bottom, 0px));
+    }
+    .vp-topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 6px; position: relative;
+    }
+    .vp-brand-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 13px; font-weight: 700; color: #9aa4b4;
+      background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.07);
+      padding: 6px 11px; border-radius: 999px;
+    }
+    .vp-date-wrap { position: relative; }
+    .vp-date-btn {
+      display: inline-flex; align-items: center; gap: 7px;
+      background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #e5e9f0; font-size: 13px; font-weight: 600;
+      padding: 7px 12px; border-radius: 10px; cursor: pointer;
+    }
+    .vp-date-menu {
+      position: absolute; top: calc(100% + 6px); right: 0; min-width: 152px;
+      background: #1d2634; border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px; padding: 5px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+      z-index: 60; display: none; flex-direction: column; gap: 2px;
+    }
+    .vp-date-menu.open { display: flex; }
+    .vp-date-opt {
+      text-align: left; background: transparent; border: none; color: #cfd6e2;
+      font-size: 13px; font-weight: 600; padding: 9px 11px; border-radius: 8px; cursor: pointer;
+    }
+    .vp-date-opt.active { background: rgba(10, 132, 255, 0.22); color: #fff; }
+
+    .vp-ring-wrap {
+      position: relative; width: 224px; height: 224px; margin: 6px auto 18px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .vp-ring-svg { width: 224px; height: 224px; display: block; }
+    .vp-ring-center {
+      position: absolute; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; text-align: center;
+      pointer-events: none; padding: 24px;
+    }
+    .vp-ring-watermark {
+      position: absolute; inset: 0; pointer-events: none;
+    }
+    .vp-ring-label { font-size: 13px; color: #96a0b0; font-weight: 500; margin-bottom: 3px; }
+    .vp-ring-amount {
+      font-size: 27px; font-weight: 800; color: #fff; letter-spacing: -0.5px;
+      font-variant-numeric: tabular-nums; line-height: 1.15;
+    }
+    .vp-ring-count { font-size: 13px; color: #96a0b0; font-weight: 500; margin-top: 4px; }
+
+    .vp-seg-bar {
+      display: flex; background: #18202c; border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 14px; padding: 4px; gap: 4px; margin-bottom: 14px;
+    }
+    .vp-seg-btn {
+      flex: 1; padding: 11px 10px; border-radius: 10px; border: none;
+      background: transparent; color: #8c96a6; font-size: 14px; font-weight: 600;
+      cursor: pointer; transition: all 0.16s ease;
+    }
+    .vp-seg-btn.active {
+      background: #273244; color: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    }
+
+    .vp-cta-row { display: flex; gap: 10px; align-items: stretch; margin-bottom: 18px; }
+    .vp-take-btn {
+      flex: 1; min-height: 54px; border-radius: 16px; border: none;
+      background: #ffffff; color: #111827; font-size: 16px; font-weight: 700;
+      display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+      cursor: pointer; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+      transition: transform 0.14s ease, opacity 0.14s ease;
+    }
+    .vp-take-btn:active { transform: scale(0.98); opacity: 0.92; }
+    .vp-upload-btn {
+      width: 56px; min-height: 54px; border-radius: 16px; flex-shrink: 0;
+      background: #1c2533; border: 1px solid rgba(255, 255, 255, 0.09);
+      display: inline-flex; align-items: center; justify-content: center;
+      cursor: pointer; transition: transform 0.14s ease, background 0.14s ease;
+    }
+    .vp-upload-btn:active { transform: scale(0.95); background: #253042; }
+    .vp-upload-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .vp-ref-card {
+      background: #1b2330; border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px; padding: 15px; margin-bottom: 18px;
+    }
+    .vp-ref-subtabs {
+      display: flex; gap: 6px; margin-bottom: 14px; background: rgba(0, 0, 0, 0.22);
+      padding: 4px; border-radius: 10px;
+    }
+    .vp-ref-subbtn {
+      flex: 1; padding: 8px 10px; border-radius: 8px; border: none;
+      background: transparent; color: #8c96a6; font-size: 12.5px; font-weight: 700; cursor: pointer;
+    }
+    .vp-ref-subbtn.active { background: rgba(10, 132, 255, 0.22); color: #fff; }
+    .vp-prov-row { display: flex; gap: 8px; margin-bottom: 12px; }
+    .vp-prov-btn {
+      flex: 1; padding: 10px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.1);
+      background: transparent; color: #cfd6e2; font-size: 13px; font-weight: 700; cursor: pointer;
+    }
+    .vp-prov-btn.active {
+      background: rgba(10, 132, 255, 0.18); border-color: #0a84ff; color: #fff;
+    }
+
+    .vp-recent-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      margin: 4px 2px 10px;
+    }
+    .vp-recent-title {
+      font-size: 12px; font-weight: 700; letter-spacing: 0.8px; color: #909aa9;
+      text-transform: uppercase;
+    }
+    .vp-recent-list { display: flex; flex-direction: column; gap: 10px; }
+    .vp-tx-card {
+      background: #1b2330; border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 16px; padding: 14px 15px;
+      display: flex; align-items: flex-start; gap: 12px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+    }
+    .vp-tx-icon {
+      position: relative; width: 42px; height: 42px; border-radius: 12px;
+      background: rgba(255, 255, 255, 0.05); display: flex; align-items: center;
+      justify-content: center; flex-shrink: 0;
+    }
+    .vp-tx-dot {
+      position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px;
+      border-radius: 50%; border: 2px solid #1b2330;
+    }
+    .vp-tx-main { flex: 1; min-width: 0; }
+    .vp-tx-prov { font-size: 15px; font-weight: 800; color: #fff; letter-spacing: 0.2px; }
+    .vp-tx-sub {
+      font-size: 13px; color: #939dae; margin-top: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .vp-tx-badge {
+      display: inline-block; margin-top: 8px; padding: 3px 9px; border-radius: 6px;
+      font-size: 11.5px; font-weight: 700;
+    }
+    .vp-tx-badge.verified { background: rgba(34, 197, 94, 0.16); color: #4ade80; }
+    .vp-tx-badge.duplicate { background: rgba(239, 68, 68, 0.16); color: #f87171; }
+    .vp-tx-badge.mismatch { background: rgba(245, 158, 11, 0.16); color: #fbbf24; }
+    .vp-tx-badge.failed { background: rgba(239, 68, 68, 0.16); color: #f87171; }
+    .vp-tx-right { text-align: right; flex-shrink: 0; }
+    .vp-tx-amt {
+      font-size: 15px; font-weight: 800; color: #fff; font-variant-numeric: tabular-nums;
+    }
+    .vp-tx-ref {
+      font-size: 11.5px; color: #e2b842; font-weight: 600; margin-top: 2px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .vp-tx-date { font-size: 12px; color: #d1d8e3; font-weight: 600; margin-top: 6px; }
+    .vp-tx-ago { font-size: 11px; color: #7e8898; margin-top: 2px; }
   </style>
 </head>
 <body>
@@ -468,87 +625,148 @@
 
 <!-- ── Screen: Verify Payment (Admin & Cashier) ────────────────────── -->
 <div id="screen-verify" class="screen">
-  <div class="header">
-    <div class="header-logo" style="background: linear-gradient(135deg, #ffd60a, #ff9f0a); color: #000;">⚡</div>
-    <div class="header-title-box">
-      <h1>Verify Payment</h1>
-      <p id="verify-cashier-label">Checking receipts against fraud</p>
+  <!-- Top Filter Bar -->
+  <div class="vp-topbar">
+    <div class="vp-brand-pill">
+      <span>⚡</span>
+      <span id="verify-cashier-label">CheckFlow ET</span>
+    </div>
+
+    <div class="vp-date-wrap">
+      <button id="vp-date-btn" type="button" class="vp-date-btn" onclick="toggleVerifyRangeMenu(event)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="16" y1="2" x2="16" y2="6"></line>
+          <line x1="8" y1="2" x2="8" y2="6"></line>
+          <line x1="3" y1="10" x2="21" y2="10"></line>
+        </svg>
+        <span id="vp-date-label">Today</span>
+        <span style="font-size: 10px; opacity: 0.75;">▾</span>
+      </button>
+
+      <div id="vp-date-menu" class="vp-date-menu">
+        <button type="button" class="vp-date-opt active" data-range="today" onclick="selectVerifyRange('today')">Today</button>
+        <button type="button" class="vp-date-opt" data-range="week" onclick="selectVerifyRange('week')">Last 7 days</button>
+        <button type="button" class="vp-date-opt" data-range="month" onclick="selectVerifyRange('month')">Last 30 days</button>
+        <button type="button" class="vp-date-opt" data-range="all" onclick="selectVerifyRange('all')">All time</button>
+      </div>
     </div>
   </div>
 
-  <!-- Verification Input Mode Pills -->
-  <div class="tab-pills" style="margin-top: 14px;">
-    <button id="vtab-scan" class="tab-pill active" onclick="switchVerifyTab('scan', true)">📷 Scan Receipt</button>
-    <button id="vtab-image" class="tab-pill" onclick="switchVerifyTab('image')">📁 Upload Image</button>
-    <button id="vtab-manual" class="tab-pill" onclick="switchVerifyTab('manual')">✍️ Manual</button>
+  <!-- Circular Gauge Hero Ring -->
+  <div class="vp-ring-wrap">
+    <svg id="vp-ring-svg" class="vp-ring-svg" viewBox="0 0 220 220" aria-hidden="true">
+      <circle cx="110" cy="110" r="88" fill="none" stroke="#6c7179" stroke-width="17" stroke-linecap="round"
+        stroke-dasharray="528.35 552.92" transform="rotate(-82 110 110)"></circle>
+    </svg>
+
+    <!-- Subtle watermark provider emblems inside upper ring -->
+    <svg class="vp-ring-watermark" viewBox="0 0 220 220" aria-hidden="true" style="opacity: 0.14;">
+      <polygon points="82,48 85,54 91,54 86,58 88,64 82,60 76,64 78,58 73,54 79,54" fill="#eab308"/>
+      <circle cx="122" cy="46" r="7" fill="none" stroke="#9ca3af" stroke-width="2"/>
+      <path d="M148 66c4-3 10-3 14 0M146 72c6-3 12-3 18 0" stroke="#38bdf8" stroke-width="2.4" stroke-linecap="round" fill="none"/>
+      <path d="M52 106h12M58 100v12" stroke="#38bdf8" stroke-width="3" stroke-linecap="round"/>
+    </svg>
+
+    <div class="vp-ring-center">
+      <div id="vp-ring-caption" class="vp-ring-label">Verified today</div>
+      <div id="vp-ring-amount" class="vp-ring-amount">ETB 0.00</div>
+      <div id="vp-ring-count" class="vp-ring-count">0 payments</div>
+    </div>
   </div>
 
-  <!-- Scan Mode Hero Card -->
-  <div id="vform-scan" class="card" style="padding: 24px 18px; text-align: center;">
-    <div style="width: 60px; height: 60px; border-radius: 50%; background: rgba(10, 132, 255, 0.2); color: var(--button); display: flex; align-items: center; justify-content: center; font-size: 30px; margin: 0 auto 12px;">📷</div>
-    <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 6px;">Live Receipt Scanner</h2>
-    <p style="font-size: 13px; color: var(--hint); margin-bottom: 18px; max-width: 290px; margin-left: auto; margin-right: auto;">Point your phone camera at any CBE or Telebirr receipt to verify automatically in seconds.</p>
+  <!-- 2-Option Segmented Toggle: Photo / Scan | Reference / SMS -->
+  <div class="vp-seg-bar" role="tablist" aria-label="Verification method">
+    <button id="vtab-photo" type="button" class="vp-seg-btn active" onclick="switchVerifyTab('photo')">Photo / Scan</button>
+    <button id="vtab-ref" type="button" class="vp-seg-btn" onclick="switchVerifyTab('ref')">Reference / SMS</button>
+  </div>
 
-    <button class="btn" onclick="openCameraScanner()" style="display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; font-size: 15px; font-weight: 700;">
-      <span>📷</span> Open Camera Scanner
+  <!-- Photo / Scan Primary Actions -->
+  <div id="vform-photo" class="vp-cta-row">
+    <button type="button" class="vp-take-btn" onclick="openCameraScanner()">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#111827" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+        <circle cx="12" cy="13" r="4"></circle>
+      </svg>
+      <span>Take a picture</span>
+    </button>
+
+    <input id="vimage-file" type="file" accept="image/*,application/pdf" style="display:none;" onchange="handleQuickUploadFile(event)" />
+    <button id="vimage-btn" type="button" class="vp-upload-btn" onclick="triggerQuickUpload()" aria-label="Upload receipt screenshot or PDF" title="Upload screenshot or photo">
+      <svg id="vimage-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#e5a922" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="5" width="14" height="14" rx="2.5"></rect>
+        <circle cx="7.5" cy="9.5" r="1.2" fill="#e5a922" stroke="none"></circle>
+        <path d="M4 17l4-4 3 3 2.5-2.5L17 17"></path>
+        <path d="M19 9V3m0 0l-2.5 2.5M19 3l2.5 2.5"></path>
+      </svg>
     </button>
   </div>
 
-  <!-- Manual Mode Form -->
-  <div id="vform-manual" class="card" style="display: none; padding: 16px;">
-    <label>Bank / Provider</label>
-    <select id="vmanual-provider">
-      <option value="CBE">Commercial Bank of Ethiopia (CBE)</option>
-      <option value="TELEBIRR">Telebirr</option>
-      <option value="BOA">Bank of Abyssinia (BOA)</option>
-    </select>
-    <div class="form-gap"></div>
-
-    <label>Transaction Reference <span class="req">*</span></label>
-    <input id="vmanual-ref" type="text" placeholder="e.g. FT2301290349 or 1000..." />
-    <div class="form-gap"></div>
-
-    <label>Expected Amount (ETB) <span class="req">*</span></label>
-    <input id="vmanual-amount" type="number" step="0.01" placeholder="e.g. 1500.00" />
-    <div class="form-gap"></div>
-
-    <button class="btn" id="vmanual-btn" onclick="submitVerifyManual()">⚡ Verify Payment</button>
-  </div>
-
-  <!-- Image Upload Mode Form -->
-  <div id="vform-image" class="card" style="display: none; padding: 16px;">
-    <label>Bank / Provider</label>
-    <div style="display: flex; gap: 8px; margin-bottom: 14px;">
-      <button id="vimg-prov-cbe" type="button" class="btn" style="flex: 1; padding: 10px; font-size: 13px; background: rgba(10, 132, 255, 0.2); border: 2px solid var(--button);" onclick="selectMiniappProvider('CBE')">🏦 CBE Bank</button>
-      <button id="vimg-prov-telebirr" type="button" class="btn ghost" style="flex: 1; padding: 10px; font-size: 13px; border: 1px solid var(--glass-border);" onclick="selectMiniappProvider('TELEBIRR')">📱 Telebirr</button>
+  <!-- Reference / SMS Panel -->
+  <div id="vform-ref" class="vp-ref-card" style="display: none;">
+    <div class="vp-ref-subtabs">
+      <button id="vref-sub-manual" type="button" class="vp-ref-subbtn active" onclick="switchRefSubMode('manual')">Reference Number</button>
+      <button id="vref-sub-sms" type="button" class="vp-ref-subbtn" onclick="switchRefSubMode('sms')">Paste SMS / Link</button>
     </div>
 
-    <label>Upload Screenshot or Photo <span class="req">*</span></label>
-    <input id="vimage-file" type="file" accept="image/*,application/pdf" />
-    <div class="form-gap"></div>
-    <button class="btn" id="vimage-btn" onclick="submitVerifyImage()">⚡ Scan & Verify Image</button>
-  </div>
-
-  <!-- Verification Result Display -->
-  <div id="vresult-card" class="card" style="display: none; margin-top: 14px; padding: 18px; border-width: 2px;">
-    <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 14px;">
-      <div id="vresult-icon" style="width: 48px; height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center; font-size: 26px;"></div>
-      <div>
-        <h2 id="vresult-title" style="font-size: 18px; font-weight: 800;"></h2>
-        <p id="vresult-desc" style="font-size: 13px; color: var(--hint); margin-top: 2px;"></p>
+    <div id="vref-panel-manual">
+      <label>Bank / Provider</label>
+      <div class="vp-prov-row">
+        <button id="vref-prov-cbe" type="button" class="vp-prov-btn active" onclick="selectManualProvider('CBE')">🏦 CBE Bank</button>
+        <button id="vref-prov-telebirr" type="button" class="vp-prov-btn" onclick="selectManualProvider('TELEBIRR')">📱 Telebirr</button>
       </div>
+      <input id="vmanual-provider" type="hidden" value="CBE" />
+
+      <label>Transaction Reference <span class="req">*</span></label>
+      <input id="vmanual-ref" type="text" placeholder="e.g. FT26286ZF0XC or DA83..." />
+      <div class="form-gap"></div>
+
+      <label>Amount (ETB) <span class="req">*</span></label>
+      <input id="vmanual-amount" type="number" step="0.01" placeholder="e.g. 500.00" />
+      <div class="form-gap"></div>
+
+      <button class="btn" id="vmanual-btn" onclick="submitVerifyManual()">⚡ Verify Reference</button>
     </div>
 
-    <!-- Blurry/Unreadable Hint Banner -->
-    <div id="vresult-hint" style="display: none; background: rgba(255, 214, 10, 0.15); border: 1px solid rgba(255, 214, 10, 0.3); border-radius: 10px; padding: 10px 12px; margin: 10px 0 14px; font-size: 12px; color: #ffd60a;">
+    <div id="vref-panel-sms" style="display: none;">
+      <label>SMS Message or Receipt URL <span class="req">*</span></label>
+      <textarea id="vsms-text" rows="3" placeholder="Paste full Telebirr / CBE confirmation SMS or https:// receipt link..." style="resize: vertical;"></textarea>
+      <div class="form-gap"></div>
+
+      <label>Expected Amount (ETB) <span style="font-weight:400;text-transform:none;">(optional)</span></label>
+      <input id="vsms-amount" type="number" step="0.01" placeholder="e.g. 500.00" />
+      <div class="form-gap"></div>
+
+      <button class="btn" id="vsms-btn" onclick="submitVerifySms()">⚡ Verify SMS / Link</button>
+    </div>
+  </div>
+
+  <!-- Live Verification Result Card -->
+  <div id="vresult-card" class="card" style="display: none; margin: 0 0 18px; padding: 16px; border-width: 2px;">
+    <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px;">
+      <div style="display: flex; align-items: center; gap: 12px; min-width: 0;">
+        <div id="vresult-icon" style="width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0;"></div>
+        <div style="min-width: 0;">
+          <h2 id="vresult-title" style="font-size: 17px; font-weight: 800;"></h2>
+          <p id="vresult-desc" style="font-size: 12.5px; color: var(--hint); margin-top: 2px;"></p>
+        </div>
+      </div>
+      <button type="button" onclick="dismissVerifyResult()" aria-label="Close result" style="background: rgba(255,255,255,0.08); border: none; color: #cfd6e2; width: 28px; height: 28px; border-radius: 50%; cursor: pointer; flex-shrink: 0;">✕</button>
+    </div>
+
+    <div id="vresult-hint" style="display: none; background: rgba(255, 214, 10, 0.15); border: 1px solid rgba(255, 214, 10, 0.3); border-radius: 10px; padding: 10px 12px; margin: 8px 0 12px; font-size: 12px; color: #ffd60a;">
       💡 <strong>Tip:</strong> Hold steady, use good light, and keep the whole receipt clear.
     </div>
 
-    <div id="vresult-details" style="font-size: 14px; display: flex; flex-direction: column; gap: 8px;"></div>
+    <div id="vresult-details" style="font-size: 13.5px; display: flex; flex-direction: column; gap: 7px;"></div>
+  </div>
 
-    <button class="btn" onclick="openCameraScanner()" style="margin-top: 16px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;">
-      <span>📷</span> Scan Another Receipt
-    </button>
+  <!-- Recent Verifications Feed -->
+  <div class="vp-recent-hdr">
+    <span class="vp-recent-title">RECENT</span>
+  </div>
+  <div id="vp-recent-list" class="vp-recent-list">
+    <div class="vp-tx-card" style="justify-content: center; color: #8c96a6; font-size: 13px;">Loading recent activity…</div>
   </div>
 </div>
 
@@ -942,7 +1160,7 @@
 
 <div id="toast"></div>
 
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 <script src="scanner.js?v=7"></script>
 </body>
 </html>

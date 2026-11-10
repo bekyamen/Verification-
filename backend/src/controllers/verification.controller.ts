@@ -180,3 +180,104 @@ export const verifyManualPayload = async (req: AuthenticatedRequest, res: Respon
     res.status(400).json({ error: 'Validation failed', details: error.errors || error.message });
   }
 };
+
+function getRangeStartEat(range: string): Date | null {
+  if (range === 'all') return null;
+
+  // Ethiopia (Africa/Addis_Ababa) uses UTC+3 year-round
+  const EAT_OFFSET_MS = 3 * 60 * 60 * 1000;
+  const nowEat = new Date(Date.now() + EAT_OFFSET_MS);
+  const midnightEatUtcMs =
+    Date.UTC(nowEat.getUTCFullYear(), nowEat.getUTCMonth(), nowEat.getUTCDate()) - EAT_OFFSET_MS;
+
+  if (range === 'week') return new Date(midnightEatUtcMs - 6 * 24 * 60 * 60 * 1000);
+  if (range === 'month') return new Date(midnightEatUtcMs - 29 * 24 * 60 * 60 * 1000);
+  return new Date(midnightEatUtcMs); // 'today'
+}
+
+export const getVerificationHistory = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const context = await resolveBranchAndCashier(req);
+    if (!context) {
+      res.status(401).json({ error: 'Missing cashier or branch context.' });
+      return;
+    }
+
+    const rawRange = String(req.query.range || 'today').trim().toLowerCase();
+    const range = rawRange === 'week' || rawRange === 'month' || rawRange === 'all' ? rawRange : 'today';
+    const rawLimit = Number(req.query.limit || 15);
+    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(50, Math.floor(rawLimit))) : 15;
+    const rangeStart = getRangeStartEat(range);
+
+    const summaryWhere: any = {
+      branchId: context.branchId,
+      status: 'VERIFIED',
+      ...(rangeStart ? { verifiedAt: { gte: rangeStart } } : {}),
+    };
+
+    const [grouped, recentRows] = await Promise.all([
+      prisma.verificationRecord.groupBy({
+        by: ['provider'],
+        where: summaryWhere,
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      prisma.verificationRecord.findMany({
+        where: { branchId: context.branchId },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          provider: true,
+          txnReference: true,
+          amount: true,
+          expectedAmount: true,
+          payerName: true,
+          payerPhone: true,
+          receivingAccount: true,
+          status: true,
+          verifiedAt: true,
+          createdAt: true,
+        },
+      }),
+    ]);
+
+    let totalAmount = 0;
+    let totalCount = 0;
+    const byProvider: Record<string, { amount: number; count: number }> = {};
+
+    for (const row of grouped) {
+      const amt = Number(row._sum.amount ?? 0);
+      const cnt = row._count._all ?? 0;
+      totalAmount += amt;
+      totalCount += cnt;
+      byProvider[row.provider] = { amount: amt, count: cnt };
+    }
+
+    const recent = recentRows.map((r) => ({
+      id: r.id,
+      provider: r.provider,
+      txnReference: r.txnReference,
+      amount: Number(r.amount),
+      expectedAmount: r.expectedAmount !== null ? Number(r.expectedAmount) : null,
+      payerName: r.payerName,
+      payerPhone: r.payerPhone,
+      receivingAccount: r.receivingAccount,
+      status: r.status,
+      verifiedAt: r.verifiedAt ? r.verifiedAt.toISOString() : null,
+      createdAt: r.createdAt.toISOString(),
+    }));
+
+    res.json({
+      range,
+      summary: {
+        totalAmount,
+        totalCount,
+        byProvider,
+      },
+      recent,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to load verification history', details: error.message });
+  }
+};

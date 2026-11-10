@@ -426,50 +426,255 @@ async function loadHomeScreen() {
 }
 
 // ── VERIFY PAYMENT SCREEN ────────────────────────────────────────────────────
-let _activeVerifyTab = 'scan';
-let _selectedProvider = 'CBE';
+let _activeVerifyTab = 'photo';
+let _refSubMode = 'manual';
+let _manualProvider = 'CBE';
+let _verifyRange = 'today';
 
-function selectMiniappProvider(p) {
-  _selectedProvider = p;
+const VERIFY_RANGE_LABELS = {
+  today: { btn: 'Today', caption: 'Verified today' },
+  week: { btn: 'Last 7 days', caption: 'Verified (7d)' },
+  month: { btn: 'Last 30 days', caption: 'Verified (30d)' },
+  all: { btn: 'All time', caption: 'Verified total' },
+};
+
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('vp-date-menu');
+  const wrap = document.querySelector('.vp-date-wrap');
+  if (menu && menu.classList.contains('open') && wrap && !wrap.contains(e.target)) {
+    menu.classList.remove('open');
+  }
+});
+
+function toggleVerifyRangeMenu(e) {
+  if (e) e.stopPropagation();
+  const menu = document.getElementById('vp-date-menu');
+  if (menu) menu.classList.toggle('open');
+}
+
+function selectVerifyRange(range) {
+  _verifyRange = VERIFY_RANGE_LABELS[range] ? range : 'today';
   haptic('selection');
 
-  const isCbe = (p === 'CBE');
+  const menu = document.getElementById('vp-date-menu');
+  if (menu) menu.classList.remove('open');
 
-  // Update vform-image buttons
-  const imgCbe = document.getElementById('vimg-prov-cbe');
-  const imgTb = document.getElementById('vimg-prov-telebirr');
-  if (imgCbe && imgTb) {
-    imgCbe.style.background = isCbe ? 'rgba(10, 132, 255, 0.2)' : 'transparent';
-    imgCbe.style.border = isCbe ? '2px solid var(--button)' : '1px solid var(--glass-border)';
-    imgTb.style.background = !isCbe ? 'rgba(10, 132, 255, 0.2)' : 'transparent';
-    imgTb.style.border = !isCbe ? '2px solid var(--button)' : '1px solid var(--glass-border)';
-  }
+  const meta = VERIFY_RANGE_LABELS[_verifyRange];
+  const lbl = document.getElementById('vp-date-label');
+  const cap = document.getElementById('vp-ring-caption');
+  if (lbl) lbl.textContent = meta.btn;
+  if (cap) cap.textContent = meta.caption;
 
-  // Sync with manual dropdown
-  const manualSel = document.getElementById('vmanual-provider');
-  if (manualSel) manualSel.value = p;
+  document.querySelectorAll('.vp-date-opt').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.range === _verifyRange);
+  });
+
+  loadVerifyHistory();
 }
 
 function initVerifyScreen() {
   const lbl = document.getElementById('verify-cashier-label');
   if (lbl && _profile) {
-    lbl.textContent = `Logged in as: ${_profile.fullName} (${_profile.role})`;
+    lbl.textContent = _profile.fullName ? _profile.fullName.split(' ')[0] : 'Verify';
   }
-  switchVerifyTab(_activeVerifyTab || 'scan', false);
+  switchVerifyTab(_activeVerifyTab || 'photo');
+  switchRefSubMode(_refSubMode || 'manual');
+  loadVerifyHistory();
 }
 
-function switchVerifyTab(tab, autoLaunchCamera = false) {
-  _activeVerifyTab = tab;
+function switchVerifyTab(tab) {
+  _activeVerifyTab = tab === 'ref' ? 'ref' : 'photo';
   haptic('selection');
-  ['scan', 'image', 'manual'].forEach(t => {
-    const btn = document.getElementById(`vtab-${t}`);
-    const form = document.getElementById(`vform-${t}`);
-    if (btn) btn.classList.toggle('active', t === tab);
-    if (form) form.style.display = (t === tab) ? 'block' : 'none';
+  const btnPhoto = document.getElementById('vtab-photo');
+  const btnRef = document.getElementById('vtab-ref');
+  const formPhoto = document.getElementById('vform-photo');
+  const formRef = document.getElementById('vform-ref');
+
+  if (btnPhoto) btnPhoto.classList.toggle('active', _activeVerifyTab === 'photo');
+  if (btnRef) btnRef.classList.toggle('active', _activeVerifyTab === 'ref');
+  if (formPhoto) formPhoto.style.display = _activeVerifyTab === 'photo' ? 'flex' : 'none';
+  if (formRef) formRef.style.display = _activeVerifyTab === 'ref' ? 'block' : 'none';
+}
+
+function switchRefSubMode(mode) {
+  _refSubMode = mode === 'sms' ? 'sms' : 'manual';
+  haptic('selection');
+  const btnManual = document.getElementById('vref-sub-manual');
+  const btnSms = document.getElementById('vref-sub-sms');
+  const panManual = document.getElementById('vref-panel-manual');
+  const panSms = document.getElementById('vref-panel-sms');
+
+  if (btnManual) btnManual.classList.toggle('active', _refSubMode === 'manual');
+  if (btnSms) btnSms.classList.toggle('active', _refSubMode === 'sms');
+  if (panManual) panManual.style.display = _refSubMode === 'manual' ? 'block' : 'none';
+  if (panSms) panSms.style.display = _refSubMode === 'sms' ? 'block' : 'none';
+}
+
+function selectManualProvider(p) {
+  _manualProvider = p === 'TELEBIRR' ? 'TELEBIRR' : 'CBE';
+  haptic('selection');
+  const btnCbe = document.getElementById('vref-prov-cbe');
+  const btnTb = document.getElementById('vref-prov-telebirr');
+  const hidden = document.getElementById('vmanual-provider');
+  if (btnCbe) btnCbe.classList.toggle('active', _manualProvider === 'CBE');
+  if (btnTb) btnTb.classList.toggle('active', _manualProvider === 'TELEBIRR');
+  if (hidden) hidden.value = _manualProvider;
+}
+
+function formatEtbAmount(num) {
+  const n = Number(num || 0);
+  if (!Number.isFinite(n)) return '0.00';
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatRecentDate(isoStr) {
+  if (!isoStr) return { dateText: '—', agoText: '' };
+  const d = new Date(isoStr);
+  if (Number.isNaN(d.getTime())) return { dateText: '—', agoText: '' };
+  const dateText = d.toLocaleString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
   });
-  if (tab === 'scan' && autoLaunchCamera && typeof window.openCameraScanner === 'function') {
-    window.openCameraScanner();
+  const diffMin = Math.max(0, Math.floor((Date.now() - d.getTime()) / 60000));
+  let agoText = 'Just now';
+  if (diffMin >= 1440) {
+    const days = Math.floor(diffMin / 1440);
+    const hrs = Math.floor((diffMin % 1440) / 60);
+    agoText = `${days}d ${hrs}h ago`;
+  } else if (diffMin >= 60) {
+    const hrs = Math.floor(diffMin / 60);
+    const mins = diffMin % 60;
+    agoText = `${hrs}h ${mins}m ago`;
+  } else if (diffMin >= 1) {
+    agoText = `${diffMin}m ago`;
   }
+  return { dateText, agoText };
+}
+
+function renderVerifyRing(summary) {
+  const totalAmount = Number(summary?.totalAmount || 0);
+  const totalCount = Number(summary?.totalCount || 0);
+  const byProvider = summary?.byProvider || {};
+
+  const amtEl = document.getElementById('vp-ring-amount');
+  const cntEl = document.getElementById('vp-ring-count');
+  const svg = document.getElementById('vp-ring-svg');
+
+  if (amtEl) amtEl.textContent = `ETB ${formatEtbAmount(totalAmount)}`;
+  if (cntEl) cntEl.textContent = `${totalCount} ${totalCount === 1 ? 'payment' : 'payments'}`;
+  if (!svg) return;
+
+  const r = 88;
+  const C = 2 * Math.PI * r;
+  const arcSpan = C * (344 / 360);
+
+  if (totalAmount <= 0 || totalCount <= 0) {
+    svg.innerHTML = `<circle cx="110" cy="110" r="${r}" fill="none" stroke="#6c7179" stroke-width="17" stroke-linecap="round" stroke-dasharray="${arcSpan.toFixed(2)} ${C.toFixed(2)}" transform="rotate(-82 110 110)"></circle>`;
+    return;
+  }
+
+  const colors = { TELEBIRR: '#00a6fb', CBE: '#f59e0b', BOA: '#a855f7' };
+  const entries = Object.entries(byProvider).filter(([, v]) => Number(v?.amount || 0) > 0);
+
+  let html = `<circle cx="110" cy="110" r="${r}" fill="none" stroke="rgba(255,255,255,0.09)" stroke-width="17" stroke-linecap="round" stroke-dasharray="${arcSpan.toFixed(2)} ${C.toFixed(2)}" transform="rotate(-82 110 110)"></circle>`;
+  let offset = 0;
+
+  for (const [prov, info] of entries) {
+    const share = Number(info.amount) / totalAmount;
+    const segLen = Math.max(8, arcSpan * share);
+    const col = colors[prov] || '#30d158';
+    html += `<circle cx="110" cy="110" r="${r}" fill="none" stroke="${col}" stroke-width="17" stroke-linecap="round" stroke-dasharray="${segLen.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-82 110 110)"></circle>`;
+    offset += segLen;
+  }
+  svg.innerHTML = html;
+}
+
+function getProviderSvg(provider) {
+  if (provider === 'TELEBIRR') {
+    return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+      <path d="M12 3v8M8 7h8M12 11c3.5 0 6 2.5 6 5.5S15.5 21 12 21s-6-2.5-6-5.5" stroke="#0ea5e9" stroke-width="2.5" stroke-linecap="round"/>
+    </svg>`;
+  }
+  if (provider === 'CBE') {
+    return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+      <polygon points="12,3 14.7,9 21,9.5 16,13.8 17.5,20 12,16.8 6.5,20 8,13.8 3,9.5 9.3,9" fill="#f59e0b"/>
+    </svg>`;
+  }
+  return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2.2">
+    <path d="M3 10h18M5 10v8M10 10v8M14 10v8M19 10v8M2 20h20M12 3l10 5H2l10-5z"/>
+  </svg>`;
+}
+
+function renderRecentTransactions(items) {
+  const list = document.getElementById('vp-recent-list');
+  if (!list) return;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    list.innerHTML = `<div class="vp-tx-card" style="justify-content:center;color:#8c96a6;font-size:13px;">No recent verifications yet. Scan or upload a receipt above.</div>`;
+    return;
+  }
+
+  list.innerHTML = items.map((tx) => {
+    const prov = String(tx.provider || 'CBE').toUpperCase();
+    const status = String(tx.status || 'VERIFIED');
+    let badgeClass = 'verified';
+    let badgeText = 'Verified';
+    let dotColor = '#22c55e';
+
+    if (status === 'FLAGGED_DUPLICATE') {
+      badgeClass = 'duplicate';
+      badgeText = 'Duplicate';
+      dotColor = '#ef4444';
+    } else if (status === 'AMOUNT_MISMATCH') {
+      badgeClass = 'mismatch';
+      badgeText = 'Mismatch';
+      dotColor = '#f59e0b';
+    } else if (status !== 'VERIFIED') {
+      badgeClass = 'failed';
+      badgeText = 'Failed';
+      dotColor = '#ef4444';
+    }
+
+    const sub = tx.payerName || (tx.receivingAccount ? `To ${tx.receivingAccount}` : 'Receipt check');
+    const { dateText, agoText } = formatRecentDate(tx.verifiedAt || tx.createdAt);
+
+    return `<div class="vp-tx-card">
+      <div class="vp-tx-icon">
+        ${getProviderSvg(prov)}
+        <span class="vp-tx-dot" style="background:${dotColor};"></span>
+      </div>
+      <div class="vp-tx-main">
+        <div class="vp-tx-prov">${escHtml(prov)}</div>
+        <div class="vp-tx-sub">${escHtml(sub)}</div>
+        <span class="vp-tx-badge ${badgeClass}">${badgeText}</span>
+      </div>
+      <div class="vp-tx-right">
+        <div class="vp-tx-amt">ETB ${formatEtbAmount(tx.amount)}</div>
+        <div class="vp-tx-ref">${escHtml(tx.txnReference || '—')}</div>
+        <div class="vp-tx-date">${escHtml(dateText)}</div>
+        ${agoText ? `<div class="vp-tx-ago">${escHtml(agoText)}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function loadVerifyHistory() {
+  const { ok, data } = await api('GET', `/verify/history?range=${encodeURIComponent(_verifyRange)}&limit=15`);
+  if (!ok || !data) {
+    renderRecentTransactions([]);
+    return;
+  }
+  renderVerifyRing(data.summary);
+  renderRecentTransactions(data.recent || []);
+}
+
+function dismissVerifyResult() {
+  const card = document.getElementById('vresult-card');
+  if (card) card.style.display = 'none';
 }
 
 // Live camera scanner implementation lives in scanner.js (window.openCameraScanner, etc.)
@@ -579,11 +784,49 @@ function renderVerifyResult(result) {
   }
 
   details.innerHTML = html;
-  card.scrollIntoView({ behavior: 'smooth' });
+  loadVerifyHistory();
+}
+
+function triggerQuickUpload() {
+  const input = document.getElementById('vimage-file');
+  if (input) input.click();
+}
+
+async function handleQuickUploadFile(event) {
+  const fileInput = event?.target || document.getElementById('vimage-file');
+  const file = fileInput?.files?.[0];
+  if (!file) return;
+
+  const uploadBtn = document.getElementById('vimage-btn');
+  const uploadIcon = document.getElementById('vimage-icon');
+  if (uploadBtn) uploadBtn.disabled = true;
+  if (uploadIcon) uploadIcon.style.opacity = '0.45';
+
+  toast('Optimizing & verifying receipt…');
+  const isPdf = file.type === 'application/pdf';
+  const payloadBlob = isPdf
+    ? file
+    : (typeof compressImageClient === 'function' ? await compressImageClient(file, 1400, 0.85) : file);
+
+  const fd = new FormData();
+  fd.append('receipt', payloadBlob, isPdf ? (file.name || 'receipt.pdf') : 'receipt.jpg');
+
+  const { ok, data } = await api('POST', '/verify/image', fd, true);
+  if (uploadBtn) uploadBtn.disabled = false;
+  if (uploadIcon) uploadIcon.style.opacity = '1';
+  if (fileInput) fileInput.value = '';
+
+  if (!ok) {
+    toast('❌ ' + (data?.error || 'Image verification failed'));
+    renderVerifyResult({ status: 'FAILED', message: data?.error || 'Image verification failed' });
+    return;
+  }
+
+  renderVerifyResult(data);
 }
 
 async function submitVerifyManual() {
-  const provider = document.getElementById('vmanual-provider').value;
+  const provider = document.getElementById('vmanual-provider')?.value || 'CBE';
   const txnReference = document.getElementById('vmanual-ref').value.trim();
   const amountStr = document.getElementById('vmanual-amount').value.trim();
   const amount = parseFloat(amountStr);
@@ -612,33 +855,29 @@ async function submitVerifyManual() {
   renderVerifyResult(data);
 }
 
-async function submitVerifyImage() {
-  const fileInput = document.getElementById('vimage-file');
-  const file = fileInput.files?.[0];
-  if (!file) {
-    toast('Please select an image file to upload');
+async function submitVerifySms() {
+  const rawText = document.getElementById('vsms-text')?.value.trim() || '';
+  const amtStr = document.getElementById('vsms-amount')?.value.trim() || '';
+  const expectedAmount = amtStr ? parseFloat(amtStr) : undefined;
+
+  if (!rawText || rawText.length < 5) {
+    toast('Please paste the SMS confirmation or receipt link');
     haptic('error');
     return;
   }
 
-  setLoading('vimage-btn', true);
-  toast('Optimizing image...');
-  const isPdf = file.type === 'application/pdf';
-  const payloadBlob = isPdf
-    ? file
-    : (typeof compressImageClient === 'function' ? await compressImageClient(file, 1400, 0.85) : file);
+  setLoading('vsms-btn', true);
+  const isPureUrl = /^https:\/\/\S+$/i.test(rawText);
+  const payload = isPureUrl
+    ? { receiptUrl: rawText, ...(expectedAmount && expectedAmount > 0 ? { expectedAmount } : {}) }
+    : { rawText, ...(expectedAmount && expectedAmount > 0 ? { expectedAmount } : {}) };
 
-  const fd = new FormData();
-  fd.append('receipt', payloadBlob, isPdf ? (file.name || 'receipt.pdf') : 'receipt.jpg');
-  fd.append('provider', _selectedProvider);
-
-  const { ok, data } = await api('POST', '/verify/image', fd, true);
-  setLoading('vimage-btn', false);
-  fileInput.value = '';
+  const { ok, data } = await api('POST', isPureUrl ? '/verify/url' : '/verify/text', payload);
+  setLoading('vsms-btn', false);
 
   if (!ok) {
-    toast('❌ ' + (data?.error || 'Image verification failed'));
-    renderVerifyResult({ status: 'FAILED', message: data?.error || 'Image verification failed' });
+    toast('❌ ' + (data.error || 'Verification failed'));
+    renderVerifyResult({ status: 'FAILED', message: data.error || data.message || 'Verification failed' });
     return;
   }
 

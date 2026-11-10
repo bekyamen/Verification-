@@ -4,6 +4,7 @@ import {
   verifyImagePayload,
   verifyUrlPayload,
   verifyManualPayload,
+  getVerificationHistory,
 } from '../controllers/verification.controller';
 import { requireAuth, requireAdmin } from '../middleware/auth.middleware';
 import { upload } from '../middleware/multer.middleware';
@@ -41,6 +42,7 @@ const uploadReceiptOrFile = (req: any, res: any, next: any) => {
 };
 
 // ── Verification Endpoints (Accessible by both Cashier and Admin) ─────────────
+router.get('/verify/history', requireAuth, getVerificationHistory);
 router.post('/verify/text',   requireAuth, verifyTextPayload);
 router.post('/verify/image',  requireAuth, uploadReceiptOrFile, verifyImagePayload);
 router.post('/verify/url',    requireAuth, verifyUrlPayload);
