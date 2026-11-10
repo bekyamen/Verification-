@@ -10,7 +10,10 @@
   const STORAGE_SHAPE_KEY = 'cf_scanner_frame_shape';
   const STORAGE_AUTO_KEY  = 'cf_scanner_auto_capture';
 
-  let _frameShape = localStorage.getItem(STORAGE_SHAPE_KEY) === 'screenshot' ? 'screenshot' : 'tall';
+  const savedShape = localStorage.getItem(STORAGE_SHAPE_KEY);
+  let _frameShape = (savedShape === 'tall' || savedShape === 'wide' || savedShape === 'screenshot')
+    ? savedShape
+    : 'screenshot'; // Default to Screenshot (9:19)
   let _autoCaptureEnabled = localStorage.getItem(STORAGE_AUTO_KEY) === '1';
 
   // ── Scanner Runtime State ──────────────────────────────────────────────────
@@ -41,11 +44,15 @@
   let _qualityTimer = null;
   let _analysisCanvas = null;
   let _analysisCtx = null;
+  let _analysisSize = { w: 0, h: 0 };
   let _prevLuma = null;
   let _autoSharpSince = 0;
   let _autoCooldownUntil = 0;
   let _lastQualityState = 'idle';
   let _warnStreak = 0;
+
+  // Layout resize observer
+  let _resizeObserver = null;
 
   // Pinch-to-zoom & tap-to-focus gesture state
   let _pinchStartDist = 0;
@@ -102,8 +109,98 @@
     return Boolean(modal && modal.classList.contains('show'));
   }
 
-  // ── Frame Crop Math (shared by capture + live quality analyzer) ────────────
-  function computeFrameCrop(video, bleedRatio = 0.02) {
+  // ── Dynamic Real-Space Layout Sizing (0 overlap on portrait & landscape) ──
+  function getTargetAspect(shape) {
+    if (shape === 'tall') return 1 / 2.25; // ~1:2.25 narrow tall paper receipt
+    if (shape === 'wide') return 4 / 3;    // 4:3 small slip / landscape document
+    return 9 / 19;                         // ~9:19 phone screenshot (default)
+  }
+
+  function fitAspectBox(maxW, maxH, ratio) {
+    const safeW = Math.max(120, maxW);
+    const safeH = Math.max(120, maxH);
+    if (safeW / safeH > ratio) {
+      const height = Math.floor(safeH);
+      const width = Math.max(90, Math.floor(height * ratio));
+      return { width, height };
+    }
+    const width = Math.floor(safeW);
+    const height = Math.max(90, Math.floor(width / ratio));
+    return { width, height };
+  }
+
+  function recomputeDimensions() {
+    const modal = el('camera-scanner-modal');
+    if (!modal || !modal.classList.contains('show')) return;
+    const modalRect = modal.getBoundingClientRect();
+    if (modalRect.width <= 0 || modalRect.height <= 0) return;
+
+    const ratio = getTargetAspect(_frameShape);
+    const maxTargetW = Math.min(modalRect.width * 0.9, 560);
+
+    const topBar = el('scanner-top-bar');
+    const bottomHud = el('scanner-bottom-hud');
+    const stage = el('scanner-stage');
+    const frame = el('scanner-frame');
+
+    if (topBar && bottomHud && stage && frame) {
+      const topRect = topBar.getBoundingClientRect();
+      const hudRect = bottomHud.getBoundingClientRect();
+      if (topRect.height > 0 && hudRect.height > 0) {
+        const topOff = Math.max(0, Math.round(topRect.bottom - modalRect.top));
+        const botOff = Math.max(0, Math.round(modalRect.bottom - hudRect.top));
+        const availH = Math.max(120, hudRect.top - topRect.bottom - 30);
+        const dims = fitAspectBox(Math.max(140, maxTargetW), availH, ratio);
+
+        stage.style.top = `${topOff}px`;
+        stage.style.bottom = `${botOff}px`;
+        frame.style.width = `${dims.width}px`;
+        frame.style.height = `${dims.height}px`;
+      }
+    }
+
+    const pTopBar = el('scanner-preview-top-bar');
+    const pDock = el('scanner-preview-dock');
+    const pStage = el('scanner-preview-stage');
+    const pBox = el('scanner-preview-frame-box');
+
+    if (pTopBar && pDock && pStage && pBox) {
+      const pTopRect = pTopBar.getBoundingClientRect();
+      const pDockRect = pDock.getBoundingClientRect();
+      if (pTopRect.height > 0 && pDockRect.height > 0) {
+        const pTopOff = Math.max(0, Math.round(pTopRect.bottom - modalRect.top));
+        const pBotOff = Math.max(0, Math.round(modalRect.bottom - pDockRect.top));
+        const pAvailH = Math.max(120, pDockRect.top - pTopRect.bottom - 14);
+        const pAvailW = Math.max(140, Math.min(modalRect.width * 0.92, 580));
+        const pDims = fitAspectBox(pAvailW, pAvailH, ratio);
+
+        pStage.style.top = `${pTopOff}px`;
+        pStage.style.bottom = `${pBotOff}px`;
+        pBox.style.width = `${pDims.width}px`;
+        pBox.style.height = `${pDims.height}px`;
+      }
+    }
+  }
+
+  function bindResizeObservers() {
+    if (window._cfScannerResizeBound) return;
+    window._cfScannerResizeBound = true;
+    window.addEventListener('resize', recomputeDimensions);
+    window.addEventListener('orientationchange', recomputeDimensions);
+
+    if (typeof ResizeObserver !== 'undefined') {
+      _resizeObserver = new ResizeObserver(recomputeDimensions);
+      const modal = el('camera-scanner-modal');
+      const topBar = el('scanner-top-bar');
+      const bottomHud = el('scanner-bottom-hud');
+      if (modal) _resizeObserver.observe(modal);
+      if (topBar) _resizeObserver.observe(topBar);
+      if (bottomHud) _resizeObserver.observe(bottomHud);
+    }
+  }
+
+  // ── Frame Crop Math (object-fit: cover + mirrored + symmetric 3% safety margin)
+  function computeFrameCrop(video, bleedRatio = 0.03) {
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     if (!vw || !vh) return null;
@@ -116,7 +213,6 @@
       return { sx: 0, sy: 0, sw: vw, sh: vh };
     }
 
-    // Account for CSS object-fit: cover scaling and centering
     const scale = Math.max(vRect.width / vw, vRect.height / vh);
     const renderedW = vw * scale;
     const renderedH = vh * scale;
@@ -144,10 +240,13 @@
       sh += padY * 2;
     }
 
-    sx = Math.max(0, Math.min(vw - 1, sx));
-    sy = Math.max(0, Math.min(vh - 1, sy));
-    sw = Math.max(1, Math.min(vw - sx, sw));
-    sh = Math.max(1, Math.min(vh - sy, sh));
+    // Symmetric clamping prevents edge shifting when frame touches sensor border
+    const leftClip = Math.max(0, -sx);
+    const topClip = Math.max(0, -sy);
+    sx = Math.max(0, sx);
+    sy = Math.max(0, sy);
+    sw = Math.max(1, Math.min(vw - sx, sw - leftClip));
+    sh = Math.max(1, Math.min(vh - sy, sh - topClip));
 
     return { sx: Math.round(sx), sy: Math.round(sy), sw: Math.round(sw), sh: Math.round(sh) };
   }
@@ -181,36 +280,30 @@
     }
   }
 
-  // Normalize & compress any image File/Blob (native camera or gallery upload)
-  async function compressImageFile(fileOrBlob, maxWidth = 1400, quality = 0.85) {
+  // Normalize & compress any image File/Blob (<= 1400px wide, <= 2600px tall, JPEG 0.85)
+  async function compressImageFile(fileOrBlob, maxWidth = 1400, quality = 0.85, maxHeight = 2600) {
     return new Promise((resolve) => {
       const url = URL.createObjectURL(fileOrBlob);
       const img = new Image();
       img.onload = async () => {
         URL.revokeObjectURL(url);
-        let w = img.naturalWidth || img.width;
-        let h = img.naturalHeight || img.height;
-        if (!w || !h) return resolve(fileOrBlob);
+        const natW = img.naturalWidth || img.width;
+        const natH = img.naturalHeight || img.height;
+        if (!natW || !natH) return resolve(fileOrBlob);
 
-        if (w > maxWidth) {
-          h = Math.round((h * maxWidth) / w);
-          w = maxWidth;
-        }
-        // Keep extremely tall receipts bounded too (~1960px height) for fast upload
-        if (h > 1960) {
-          w = Math.round((w * 1960) / h);
-          h = 1960;
-        }
+        const downscale = Math.min(1, maxWidth / natW, maxHeight / natH);
+        const w = Math.max(1, Math.round(natW * downscale));
+        const h = Math.max(1, Math.round(natH * downscale));
 
         const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, w);
-        canvas.height = Math.max(1, h);
+        canvas.width = w;
+        canvas.height = h;
         const ctx = canvas.getContext('2d');
         if (!ctx) return resolve(fileOrBlob);
 
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, w, h);
 
         const blob = await canvasToJpegBlob(canvas, quality);
         canvas.width = 0;
@@ -227,7 +320,7 @@
 
   // Expose shared compression helper to app.js (Upload Image tab)
   window.compressImageClient = function (fileOrBlob, maxDim = 1400, quality = 0.85) {
-    return compressImageFile(fileOrBlob, maxDim, quality);
+    return compressImageFile(fileOrBlob, maxDim, quality, 2600);
   };
 
   // ── Clear captured photo memory immediately ────────────────────────────────
@@ -251,32 +344,25 @@
 
   // ── UI State Controls ──────────────────────────────────────────────────────
   function applyFrameShapeUI() {
-    const frame = el('scanner-frame');
-    const previewBox = el('scanner-preview-frame-box');
-    const btnTall = el('scanner-shape-tall');
     const btnShot = el('scanner-shape-screenshot');
+    const btnTall = el('scanner-shape-tall');
+    const btnWide = el('scanner-shape-wide');
 
-    if (frame) {
-      frame.classList.toggle('frame-tall', _frameShape === 'tall');
-      frame.classList.toggle('frame-screenshot', _frameShape === 'screenshot');
-    }
-    if (previewBox) {
-      previewBox.classList.toggle('frame-tall', _frameShape === 'tall');
-      previewBox.classList.toggle('frame-screenshot', _frameShape === 'screenshot');
-    }
-    if (btnTall) btnTall.classList.toggle('active', _frameShape === 'tall');
     if (btnShot) btnShot.classList.toggle('active', _frameShape === 'screenshot');
+    if (btnTall) btnTall.classList.toggle('active', _frameShape === 'tall');
+    if (btnWide) btnWide.classList.toggle('active', _frameShape === 'wide');
+
+    recomputeDimensions();
   }
 
   window.setScannerFrameShape = function (shape) {
-    _frameShape = shape === 'screenshot' ? 'screenshot' : 'tall';
+    _frameShape = (shape === 'tall' || shape === 'wide') ? shape : 'screenshot';
     localStorage.setItem(STORAGE_SHAPE_KEY, _frameShape);
     safeHaptic('selection');
-    applyFrameShapeUI();
-    // Reset analysis stability baseline when crop region changes
     _prevLuma = null;
     _autoSharpSince = 0;
     updateAutoRing(0);
+    applyFrameShapeUI();
   };
 
   function applyAutoCaptureUI() {
@@ -355,6 +441,8 @@
     if (camView) camView.style.display = step === 'camera' ? 'flex' : 'none';
     if (prevView) prevView.style.display = step === 'preview' ? 'flex' : 'none';
     if (vrfView) vrfView.style.display = step === 'verifying' ? 'flex' : 'none';
+
+    requestAnimationFrame(recomputeDimensions);
   }
 
   function setVerifyingStage(stage) {
@@ -394,7 +482,6 @@
     const errTitle = el('scanner-error-title');
     const errMsg = el('scanner-error-msg');
     const frame = el('scanner-frame');
-    const toolbar = document.querySelector('#scanner-stage .sc-toolbar');
     const pill = el('scanner-quality-pill');
     const bottomHud = el('scanner-bottom-hud');
     const flashBtn = el('scanner-flash-btn');
@@ -402,7 +489,6 @@
     const retryBtn = el('scanner-retry-btn');
 
     if (frame) frame.style.display = 'none';
-    if (toolbar) toolbar.style.display = 'none';
     if (pill) pill.style.display = 'none';
     if (bottomHud) bottomHud.style.display = 'none';
     if (flashBtn) flashBtn.style.display = 'none';
@@ -440,14 +526,12 @@
   function hideCameraFallback() {
     const errBox = el('scanner-error-box');
     const frame = el('scanner-frame');
-    const toolbar = document.querySelector('#scanner-stage .sc-toolbar');
     const pill = el('scanner-quality-pill');
     const bottomHud = el('scanner-bottom-hud');
     const switchBtn = el('scanner-switch-btn');
 
     if (errBox) errBox.classList.remove('show');
     if (frame) frame.style.display = 'flex';
-    if (toolbar) toolbar.style.display = 'flex';
     if (pill) pill.style.display = 'inline-flex';
     if (bottomHud) bottomHud.style.display = 'flex';
     if (switchBtn) switchBtn.style.display = 'inline-flex';
@@ -526,6 +610,7 @@
 
   async function acquireCameraStream(mode) {
     const constraintsList = [
+      { video: { facingMode: { ideal: mode }, width: { ideal: 2560 }, height: { ideal: 1440 } }, audio: false },
       { video: { facingMode: { ideal: mode }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
       { video: { facingMode: { ideal: mode }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
       { video: { facingMode: { ideal: mode } }, audio: false },
@@ -654,6 +739,7 @@
       setStartingState(false);
       setQualityFeedback('idle', 'Make sure the receipt is flat, well lit and all text is clear.');
       startQualityLoop();
+      requestAnimationFrame(recomputeDimensions);
     } catch (err) {
       if (attemptId !== _cameraAttemptId) return;
       stopScannerCamera();
@@ -858,13 +944,15 @@
     const crop = computeFrameCrop(video, 0);
     if (!crop) return;
 
-    const W = 144;
-    const H = 192;
-    if (!_analysisCanvas) {
+    const W = _frameShape === 'wide' ? 192 : _frameShape === 'tall' ? 120 : 128;
+    const H = _frameShape === 'wide' ? 144 : _frameShape === 'tall' ? 264 : 256;
+    if (!_analysisCanvas || _analysisSize.w !== W || _analysisSize.h !== H) {
       _analysisCanvas = document.createElement('canvas');
       _analysisCanvas.width = W;
       _analysisCanvas.height = H;
+      _analysisSize = { w: W, h: H };
       _analysisCtx = _analysisCanvas.getContext('2d', { willReadFrequently: true });
+      _prevLuma = null;
     }
     if (!_analysisCtx) return;
 
@@ -877,6 +965,7 @@
     const pixels = _analysisCtx.getImageData(0, 0, W, H).data;
     const totalPx = W * H;
     const currLuma = new Uint8Array(totalPx);
+    const prevLuma = (_prevLuma && _prevLuma.length === totalPx) ? _prevLuma : null;
 
     let lumaSum = 0;
     let diffSum = 0;
@@ -888,13 +977,13 @@
       currLuma[p] = y;
       if ((p & 1) === 0) {
         lumaSum += y;
-        if (_prevLuma) diffSum += Math.abs(y - _prevLuma[p]);
+        if (prevLuma) diffSum += Math.abs(y - prevLuma[p]);
         lumaCount++;
       }
     }
 
     const meanLuma = lumaCount > 0 ? lumaSum / lumaCount : 128;
-    const motion = (_prevLuma && lumaCount > 0) ? (diffSum / lumaCount) : 0;
+    const motion = (prevLuma && lumaCount > 0) ? (diffSum / lumaCount) : 0;
     _prevLuma = currLuma;
 
     // Edge gradient sharpness over interior receipt zone (avoids corner borders)
@@ -998,7 +1087,9 @@
     modal.classList.add('show');
 
     initCameraGestures();
+    bindResizeObservers();
     applyFrameShapeUI();
+    requestAnimationFrame(recomputeDimensions);
     applyAutoCaptureUI();
     setScannerStep('camera');
     _facingMode = 'environment';
@@ -1116,27 +1207,20 @@
     }
 
     try {
-      const crop = computeFrameCrop(video, 0.02) || {
+      const crop = computeFrameCrop(video, 0.03) || {
         sx: 0,
         sy: 0,
         sw: video.videoWidth,
         sh: video.videoHeight,
       };
 
-      let targetW = crop.sw;
-      let targetH = crop.sh;
-      if (targetW > 1400) {
-        targetH = Math.round((targetH * 1400) / targetW);
-        targetW = 1400;
-      }
-      if (targetH > 1960) {
-        targetW = Math.round((targetW * 1960) / targetH);
-        targetH = 1960;
-      }
+      const downscale = Math.min(1, 1400 / crop.sw, 2600 / crop.sh);
+      const targetW = Math.max(1, Math.round(crop.sw * downscale));
+      const targetH = Math.max(1, Math.round(crop.sh * downscale));
 
       const capCanvas = document.createElement('canvas');
-      capCanvas.width = Math.max(1, targetW);
-      capCanvas.height = Math.max(1, targetH);
+      capCanvas.width = targetW;
+      capCanvas.height = targetH;
       const ctx = capCanvas.getContext('2d');
       if (!ctx) throw new Error('Canvas unavailable');
 
@@ -1191,6 +1275,7 @@
         setTorch(true);
       }
       startQualityLoop();
+      requestAnimationFrame(recomputeDimensions);
     } else {
       startScannerCamera(_facingMode);
     }
@@ -1209,7 +1294,7 @@
     safeToast('Preparing photo…');
 
     try {
-      const compressed = await compressImageFile(file, 1400, 0.85);
+      const compressed = await compressImageFile(file, 1400, 0.85, 2600);
       if (_previewUrl) URL.revokeObjectURL(_previewUrl);
       _capturedBlob = compressed;
       _previewUrl = URL.createObjectURL(compressed);

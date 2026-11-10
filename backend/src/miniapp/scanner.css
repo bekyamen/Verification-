@@ -26,7 +26,6 @@
   display: flex;
 }
 
-/* ── Views inside modal ───────────────────────────────────────────────────── */
 .sc-view {
   position: relative;
   flex: 1;
@@ -40,7 +39,6 @@
   overflow: hidden;
 }
 
-/* ── Live Video & Overlays ────────────────────────────────────────────────── */
 #scanner-video {
   position: absolute;
   inset: 0;
@@ -93,19 +91,19 @@
   100% { opacity: 0; transform: scale(1); }
 }
 
-/* ── Top Overlay Header (Close + Verify Payment + Flash/Switch) ───────────── */
+/* ── Top Overlay Header ───────────────────────────────────────────────────── */
 .sc-top-bar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   z-index: 30;
-  padding: calc(10px + var(--sc-safe-top)) calc(14px + var(--sc-safe-right)) 14px calc(14px + var(--sc-safe-left));
+  padding: calc(6px + var(--sc-safe-top)) calc(12px + var(--sc-safe-right)) 8px calc(12px + var(--sc-safe-left));
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
-  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.45) 65%, transparent 100%);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0.48) 72%, transparent 100%);
   pointer-events: none;
 }
 .sc-top-bar > * {
@@ -114,29 +112,27 @@
 
 .sc-top-center {
   flex: 1;
-  text-align: center;
-  padding: 2px 4px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   min-width: 0;
 }
 .sc-top-title {
-  font-size: 19px;
+  font-size: 16px;
   font-weight: 700;
   letter-spacing: -0.2px;
   color: #fff;
-  line-height: 1.2;
-}
-.sc-top-subtitle {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.78);
-  line-height: 1.35;
-  margin-top: 3px;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
 .sc-icon-btn {
   min-width: 48px;
   height: 48px;
   border-radius: 50%;
-  background: rgba(34, 38, 46, 0.68);
+  background: rgba(34, 38, 46, 0.72);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -169,54 +165,59 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
 }
 
-/* ── Camera Stage, Compact Toolbar, Giant Blue-Corner Frame, Tip Pill ─────── */
+/* ── Open Camera Corridor Stage ───────────────────────────────────────────── */
 #scanner-stage {
-  position: relative;
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  top: calc(64px + var(--sc-safe-top));
+  bottom: calc(134px + var(--sc-safe-bottom));
+  left: var(--sc-safe-left);
+  right: var(--sc-safe-right);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: calc(74px + var(--sc-safe-top)) calc(12px + var(--sc-safe-right)) calc(122px + var(--sc-safe-bottom)) calc(12px + var(--sc-safe-left));
   z-index: 10;
-  gap: 10px;
+  pointer-events: auto;
 }
 
-/* Compact top utility strip inside stage */
 .sc-toolbar {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  flex-wrap: wrap;
-  z-index: 16;
   max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 0 6px;
+}
+.sc-toolbar::-webkit-scrollbar {
+  display: none;
 }
 
 .sc-pill-group {
   display: inline-flex;
   align-items: center;
-  background: rgba(18, 22, 28, 0.78);
+  background: rgba(18, 22, 28, 0.82);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 22px;
+  border-radius: 20px;
   padding: 2px;
   gap: 2px;
+  flex-shrink: 0;
 }
 
 .sc-seg-btn {
-  min-height: 36px;
-  padding: 0 11px;
-  border-radius: 18px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 16px;
   border: none;
   background: transparent;
   color: rgba(255, 255, 255, 0.72);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
@@ -226,27 +227,33 @@
   background: var(--button, #0a84ff);
   color: #fff;
 }
+.sc-seg-btn.subtle {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
 .sc-seg-btn.subtle.active {
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.22);
   color: #fff;
 }
 
 .sc-mini-pill-btn {
-  min-height: 40px;
-  padding: 0 11px;
-  border-radius: 20px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(18, 22, 28, 0.78);
+  background: rgba(18, 22, 28, 0.82);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 12px;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 11.5px;
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
   transition: all 0.18s ease;
 }
 .sc-mini-pill-btn.active {
@@ -255,11 +262,11 @@
   color: #70f091;
 }
 
-/* Giant Frame (~90% width x ~65-70% height) matching mockup */
+/* Guide Frame (exact dimensions set dynamically by recomputeDimensions) */
 #scanner-frame {
   position: relative;
   border-radius: 18px;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.48);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
   border: 1px solid rgba(255, 255, 255, 0.22);
   pointer-events: none;
   z-index: 8;
@@ -267,39 +274,40 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  transition: width 0.24s cubic-bezier(.4,0,.2,1), height 0.24s cubic-bezier(.4,0,.2,1), border-color 0.2s ease;
+  margin-top: 16px;
+  transition: width 0.2s cubic-bezier(.4,0,.2,1), height 0.2s cubic-bezier(.4,0,.2,1), border-color 0.2s ease;
 }
-
-#scanner-frame.frame-tall {
-  width: min(90vw, 520px);
-  height: min(64dvh, calc(100dvh - 295px - var(--sc-safe-top) - var(--sc-safe-bottom)));
-  min-height: 280px;
-}
-
-#scanner-frame.frame-screenshot {
-  width: min(92vw, 560px);
-  height: min(52dvh, calc(92vw * 1.12), calc(100dvh - 295px - var(--sc-safe-top) - var(--sc-safe-bottom)));
-  min-height: 240px;
-}
-
 #scanner-frame.is-sharp {
   border-color: rgba(48, 209, 88, 0.45);
 }
 
+.sc-hint-above {
+  position: absolute;
+  bottom: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 11px;
+  border-radius: 999px;
+  background: rgba(12, 16, 24, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 16;
+}
+
 .camera-corner {
   position: absolute;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   border-color: #0a84ff;
   border-style: solid;
   transition: border-color 0.2s ease;
 }
-#scanner-frame.is-sharp .camera-corner {
-  border-color: var(--success, #30d158);
-}
-#scanner-frame.is-warn .camera-corner {
-  border-color: var(--accent, #ff9f0a);
-}
+#scanner-frame.is-sharp .camera-corner { border-color: var(--success, #30d158); }
+#scanner-frame.is-warn .camera-corner { border-color: var(--accent, #ff9f0a); }
 .camera-corner.tl { top: -2px; left: -2px; border-width: 4px 0 0 4px; border-top-left-radius: 18px; }
 .camera-corner.tr { top: -2px; right: -2px; border-width: 4px 4px 0 0; border-top-right-radius: 18px; }
 .camera-corner.bl { bottom: -2px; left: -2px; border-width: 0 0 4px 4px; border-bottom-left-radius: 18px; }
@@ -322,38 +330,42 @@
   pointer-events: none;
 }
 
-/* Tip Pill below the frame (matches lightbulb pill in uploaded UI) */
+/* Lightbulb tip/status pill inside bottom of stage */
 #scanner-quality-pill {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 16px;
+  gap: 8px;
+  padding: 6px 13px;
   border-radius: 999px;
-  background: rgba(20, 26, 36, 0.86);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.3;
-  max-width: min(330px, 88vw);
+  background: rgba(16, 22, 32, 0.82);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.25;
+  width: max-content;
+  max-width: min(330px, 86vw);
   z-index: 16;
   pointer-events: none;
   transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 #scanner-quality-pill svg {
   flex-shrink: 0;
-  opacity: 0.9;
 }
 #scanner-quality-pill.state-sharp {
   background: rgba(18, 56, 32, 0.9);
-  border-color: rgba(48, 209, 88, 0.6);
+  border-color: rgba(48, 209, 88, 0.65);
   color: #82f3a0;
 }
 #scanner-quality-pill.state-warn {
   background: rgba(64, 42, 10, 0.9);
-  border-color: rgba(255, 159, 10, 0.6);
+  border-color: rgba(255, 159, 10, 0.65);
   color: #ffd166;
 }
 
@@ -361,13 +373,12 @@
 #scanner-zoom-wrap {
   display: none;
   align-items: center;
-  gap: 10px;
-  width: min(250px, 72vw);
-  padding: 5px 12px;
-  border-radius: 18px;
+  gap: 8px;
+  width: min(250px, 74vw);
+  padding: 3px 12px;
+  border-radius: 16px;
   background: rgba(18, 22, 28, 0.8);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  z-index: 16;
 }
 #scanner-zoom-wrap.show {
   display: flex;
@@ -394,56 +405,61 @@
   cursor: pointer;
 }
 #scanner-zoom-val {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
-  min-width: 34px;
+  min-width: 32px;
   text-align: right;
   color: #fff;
 }
 
-/* ── Bottom Dark Action Dock (Cancel | Big Blue Shutter | Verify) ─────────── */
-.sc-bottom-dock {
+/* ── Combined Bottom HUD (Shape Chips + Zoom + Dark Dock) ─────────────────── */
+#scanner-bottom-hud {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
   z-index: 30;
-  padding: 14px calc(28px + var(--sc-safe-right)) calc(18px + var(--sc-safe-bottom)) calc(28px + var(--sc-safe-left));
-  background: linear-gradient(to top, rgba(9, 13, 21, 0.97) 0%, rgba(11, 16, 26, 0.90) 75%, rgba(11, 16, 26, 0.65) 100%);
+  padding: 8px calc(16px + var(--sc-safe-right)) calc(12px + var(--sc-safe-bottom)) calc(16px + var(--sc-safe-left));
+  background: linear-gradient(to top, rgba(9, 13, 21, 0.97) 0%, rgba(11, 16, 26, 0.90) 78%, rgba(11, 16, 26, 0.55) 100%);
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.sc-dock-row {
+  width: 100%;
+  max-width: 390px;
+  display: flex;
   align-items: center;
   justify-content: space-between;
+  padding: 0 10px;
 }
 
 .sc-dock-action {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   background: transparent;
   border: none;
   color: rgba(255, 255, 255, 0.88);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   cursor: pointer;
-  min-width: 64px;
+  min-width: 58px;
   padding: 0;
   transition: opacity 0.18s ease, transform 0.14s ease;
 }
-.sc-dock-action:disabled {
-  opacity: 0.38;
-  cursor: not-allowed;
-}
-.sc-dock-action:not(:disabled):active {
-  transform: scale(0.93);
-}
+.sc-dock-action:disabled { opacity: 0.38; cursor: not-allowed; }
+.sc-dock-action:not(:disabled):active { transform: scale(0.93); }
 
 .sc-dock-circle {
-  width: 52px;
-  height: 52px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -459,11 +475,10 @@
   box-shadow: 0 4px 18px rgba(10, 132, 255, 0.45);
 }
 
-/* Center Big Blue Camera Button (Turns green when sharp!) */
 #scanner-capture-btn {
   position: relative;
-  width: 78px;
-  height: 78px;
+  width: 72px;
+  height: 72px;
   border-radius: 50%;
   border: 4px solid rgba(77, 163, 255, 0.55);
   background: rgba(10, 132, 255, 0.2);
@@ -472,16 +487,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 0 24px rgba(10, 132, 255, 0.35);
+  box-shadow: 0 0 22px rgba(10, 132, 255, 0.35);
   transition: transform 0.12s ease, border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
 }
-#scanner-capture-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-#scanner-capture-btn:not(:disabled):active {
-  transform: scale(0.92);
-}
+#scanner-capture-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+#scanner-capture-btn:not(:disabled):active { transform: scale(0.92); }
 #scanner-capture-btn.is-sharp {
   border-color: rgba(48, 209, 88, 0.75);
   background: rgba(48, 209, 88, 0.22);
@@ -557,36 +567,32 @@
   min-height: 48px;
 }
 
-/* ── Preview Viewport (Same Large Frame + Dark Dock) ──────────────────────── */
+/* ── Preview Viewport (Same Tall Frame, Whole Image Contained) ────────────── */
 #scanner-view-preview {
   display: none;
 }
-.sc-preview-stage {
-  flex: 1;
-  width: 100%;
+#scanner-preview-stage {
+  position: absolute;
+  top: calc(64px + var(--sc-safe-top));
+  bottom: calc(92px + var(--sc-safe-bottom));
+  left: var(--sc-safe-left);
+  right: var(--sc-safe-right);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: calc(74px + var(--sc-safe-top)) 14px calc(116px + var(--sc-safe-bottom));
+  padding: 8px 12px;
 }
 .sc-preview-frame-box {
   position: relative;
-  width: min(90vw, 520px);
-  height: min(64dvh, calc(100dvh - 250px - var(--sc-safe-top) - var(--sc-safe-bottom)));
   border-radius: 18px;
   background: #0a0d14;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
-}
-.sc-preview-frame-box.frame-screenshot {
-  width: min(92vw, 560px);
-  height: min(54dvh, calc(92vw * 1.12), calc(100dvh - 250px - var(--sc-safe-top) - var(--sc-safe-bottom)));
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65);
 }
 #scanner-preview-img {
   width: 100%;
@@ -600,7 +606,7 @@
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 16px calc(24px + var(--sc-safe-right)) calc(18px + var(--sc-safe-bottom)) calc(24px + var(--sc-safe-left));
+  padding: 12px calc(20px + var(--sc-safe-right)) calc(14px + var(--sc-safe-bottom)) calc(20px + var(--sc-safe-left));
   background: linear-gradient(to top, rgba(9, 13, 21, 0.97) 0%, rgba(11, 16, 26, 0.90) 80%, rgba(11, 16, 26, 0.65) 100%);
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
@@ -608,7 +614,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 14px;
   z-index: 25;
 }
 .sc-preview-dock .btn {
@@ -681,4 +687,16 @@
   background: var(--success, #30d158);
   color: #000;
   font-weight: 800;
+}
+
+/* Landscape compact adjustments */
+@media (max-height: 500px) {
+  .sc-top-bar { padding-top: calc(4px + var(--sc-safe-top)); padding-bottom: 4px; }
+  .sc-top-title { font-size: 14px; }
+  #scanner-bottom-hud { padding-top: 5px; padding-bottom: calc(6px + var(--sc-safe-bottom)); gap: 5px; }
+  #scanner-capture-btn { width: 60px; height: 60px; }
+  .sc-dock-circle { width: 44px; height: 44px; }
+  .sc-dock-action { gap: 2px; font-size: 10.5px; }
+  .sc-hint-above { font-size: 10.5px; padding: 2px 9px; }
+  #scanner-quality-pill { bottom: 6px; padding: 5px 10px; font-size: 11px; }
 }
