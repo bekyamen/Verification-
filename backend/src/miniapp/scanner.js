@@ -6,14 +6,8 @@
 'use strict';
 
 (function () {
-  // ── Persisted preferences (layout & switches only — NEVER photos) ──────────
-  const STORAGE_SHAPE_KEY = 'cf_scanner_frame_shape';
+  // ── Persisted preferences (switches only — NEVER photos) ───────────────────
   const STORAGE_AUTO_KEY  = 'cf_scanner_auto_capture';
-
-  const savedShape = localStorage.getItem(STORAGE_SHAPE_KEY);
-  let _frameShape = (savedShape === 'tall' || savedShape === 'wide' || savedShape === 'screenshot')
-    ? savedShape
-    : 'screenshot'; // Default to Screenshot (9:19)
   let _autoCaptureEnabled = localStorage.getItem(STORAGE_AUTO_KEY) === '1';
 
   // ── Scanner Runtime State ──────────────────────────────────────────────────
@@ -77,13 +71,6 @@
     return localStorage.getItem('cf_token') || '';
   }
 
-  function getSelectedProvider() {
-    try {
-      if (typeof _selectedProvider !== 'undefined' && _selectedProvider) return _selectedProvider;
-    } catch (_) {}
-    return 'CBE';
-  }
-
   function safeHaptic(type) {
     try {
       if (typeof haptic === 'function') {
@@ -109,75 +96,40 @@
     return Boolean(modal && modal.classList.contains('show'));
   }
 
-  // ── Dynamic Real-Space Layout Sizing (0 overlap on portrait & landscape) ──
-  function getTargetAspect(shape) {
-    if (shape === 'tall') return 1 / 2.25; // ~1:2.25 narrow tall paper receipt
-    if (shape === 'wide') return 4 / 3;    // 4:3 small slip / landscape document
-    return 9 / 19;                         // ~9:19 phone screenshot (default)
-  }
-
-  function fitAspectBox(maxW, maxH, ratio) {
-    const safeW = Math.max(120, maxW);
-    const safeH = Math.max(120, maxH);
-    if (safeW / safeH > ratio) {
-      const height = Math.floor(safeH);
-      const width = Math.max(90, Math.floor(height * ratio));
-      return { width, height };
-    }
-    const width = Math.floor(safeW);
-    const height = Math.max(90, Math.floor(width / ratio));
-    return { width, height };
-  }
-
+  // ── Dynamic Real-Space Stage Sizing (0 overlap on portrait & landscape) ─────
   function recomputeDimensions() {
     const modal = el('camera-scanner-modal');
     if (!modal || !modal.classList.contains('show')) return;
     const modalRect = modal.getBoundingClientRect();
     if (modalRect.width <= 0 || modalRect.height <= 0) return;
 
-    const ratio = getTargetAspect(_frameShape);
-    const maxTargetW = Math.min(modalRect.width * 0.9, 560);
-
     const topBar = el('scanner-top-bar');
     const bottomHud = el('scanner-bottom-hud');
     const stage = el('scanner-stage');
-    const frame = el('scanner-frame');
 
-    if (topBar && bottomHud && stage && frame) {
+    if (topBar && bottomHud && stage) {
       const topRect = topBar.getBoundingClientRect();
       const hudRect = bottomHud.getBoundingClientRect();
       if (topRect.height > 0 && hudRect.height > 0) {
         const topOff = Math.max(0, Math.round(topRect.bottom - modalRect.top));
         const botOff = Math.max(0, Math.round(modalRect.bottom - hudRect.top));
-        const availH = Math.max(120, hudRect.top - topRect.bottom - 30);
-        const dims = fitAspectBox(Math.max(140, maxTargetW), availH, ratio);
-
         stage.style.top = `${topOff}px`;
         stage.style.bottom = `${botOff}px`;
-        frame.style.width = `${dims.width}px`;
-        frame.style.height = `${dims.height}px`;
       }
     }
 
     const pTopBar = el('scanner-preview-top-bar');
     const pDock = el('scanner-preview-dock');
     const pStage = el('scanner-preview-stage');
-    const pBox = el('scanner-preview-frame-box');
 
-    if (pTopBar && pDock && pStage && pBox) {
+    if (pTopBar && pDock && pStage) {
       const pTopRect = pTopBar.getBoundingClientRect();
       const pDockRect = pDock.getBoundingClientRect();
       if (pTopRect.height > 0 && pDockRect.height > 0) {
         const pTopOff = Math.max(0, Math.round(pTopRect.bottom - modalRect.top));
         const pBotOff = Math.max(0, Math.round(modalRect.bottom - pDockRect.top));
-        const pAvailH = Math.max(120, pDockRect.top - pTopRect.bottom - 14);
-        const pAvailW = Math.max(140, Math.min(modalRect.width * 0.92, 580));
-        const pDims = fitAspectBox(pAvailW, pAvailH, ratio);
-
         pStage.style.top = `${pTopOff}px`;
         pStage.style.bottom = `${pBotOff}px`;
-        pBox.style.width = `${pDims.width}px`;
-        pBox.style.height = `${pDims.height}px`;
       }
     }
   }
@@ -199,17 +151,14 @@
     }
   }
 
-  // ── Frame Crop Math (object-fit: cover + mirrored + symmetric 3% safety margin)
-  function computeFrameCrop(video, bleedRatio = 0.03) {
+  // ── Fullscreen Video Crop Math (object-fit: cover + mirrored support) ──────
+  function computeStageCrop(video, mode = 'visible', insetRatio = 0) {
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     if (!vw || !vh) return null;
 
-    const frame = el('scanner-frame');
     const vRect = video.getBoundingClientRect();
-    const fRect = frame ? frame.getBoundingClientRect() : null;
-
-    if (!fRect || fRect.width <= 0 || fRect.height <= 0 || vRect.width <= 0 || vRect.height <= 0) {
+    if (vRect.width <= 0 || vRect.height <= 0) {
       return { sx: 0, sy: 0, sw: vw, sh: vh };
     }
 
@@ -219,34 +168,42 @@
     const offsetX = (vRect.width - renderedW) / 2;
     const offsetY = (vRect.height - renderedH) / 2;
 
-    const fx = fRect.left - vRect.left;
-    const fy = fRect.top - vRect.top;
+    let targetRect = vRect;
+    if (mode === 'stage') {
+      const stage = el('scanner-stage');
+      const sRect = stage ? stage.getBoundingClientRect() : null;
+      if (sRect && sRect.width > 0 && sRect.height > 0) {
+        targetRect = sRect;
+      }
+    }
 
-    let sx = (fx - offsetX) / scale;
-    let sy = (fy - offsetY) / scale;
-    let sw = fRect.width / scale;
-    let sh = fRect.height / scale;
+    let left = targetRect.left - vRect.left;
+    let top = targetRect.top - vRect.top;
+    let width = targetRect.width;
+    let height = targetRect.height;
+
+    if (insetRatio > 0) {
+      const dx = width * insetRatio;
+      const dy = height * insetRatio;
+      left += dx;
+      top += dy;
+      width = Math.max(20, width - dx * 2);
+      height = Math.max(20, height - dy * 2);
+    }
+
+    let sx = (left - offsetX) / scale;
+    let sy = (top - offsetY) / scale;
+    let sw = width / scale;
+    let sh = height / scale;
 
     if (video.classList.contains('mirrored')) {
       sx = vw - (sx + sw);
     }
 
-    if (bleedRatio > 0) {
-      const padX = sw * bleedRatio;
-      const padY = sh * bleedRatio;
-      sx -= padX;
-      sy -= padY;
-      sw += padX * 2;
-      sh += padY * 2;
-    }
-
-    // Symmetric clamping prevents edge shifting when frame touches sensor border
-    const leftClip = Math.max(0, -sx);
-    const topClip = Math.max(0, -sy);
     sx = Math.max(0, sx);
     sy = Math.max(0, sy);
-    sw = Math.max(1, Math.min(vw - sx, sw - leftClip));
-    sh = Math.max(1, Math.min(vh - sy, sh - topClip));
+    sw = Math.max(1, Math.min(vw - sx, sw));
+    sh = Math.max(1, Math.min(vh - sy, sh));
 
     return { sx: Math.round(sx), sy: Math.round(sy), sw: Math.round(sw), sh: Math.round(sh) };
   }
@@ -343,28 +300,6 @@
   }
 
   // ── UI State Controls ──────────────────────────────────────────────────────
-  function applyFrameShapeUI() {
-    const btnShot = el('scanner-shape-screenshot');
-    const btnTall = el('scanner-shape-tall');
-    const btnWide = el('scanner-shape-wide');
-
-    if (btnShot) btnShot.classList.toggle('active', _frameShape === 'screenshot');
-    if (btnTall) btnTall.classList.toggle('active', _frameShape === 'tall');
-    if (btnWide) btnWide.classList.toggle('active', _frameShape === 'wide');
-
-    recomputeDimensions();
-  }
-
-  window.setScannerFrameShape = function (shape) {
-    _frameShape = (shape === 'tall' || shape === 'wide') ? shape : 'screenshot';
-    localStorage.setItem(STORAGE_SHAPE_KEY, _frameShape);
-    safeHaptic('selection');
-    _prevLuma = null;
-    _autoSharpSince = 0;
-    updateAutoRing(0);
-    applyFrameShapeUI();
-  };
-
   function applyAutoCaptureUI() {
     const btn = el('scanner-auto-btn');
     if (btn) {
@@ -408,15 +343,10 @@
   }
 
   function setQualityFeedback(state, text) {
-    const frame = el('scanner-frame');
     const pill = el('scanner-quality-pill');
     const textEl = el('scanner-quality-text');
     const captureBtn = el('scanner-capture-btn');
 
-    if (frame) {
-      frame.classList.toggle('is-sharp', state === 'sharp');
-      frame.classList.toggle('is-warn', state === 'dark' || state === 'moving');
-    }
     if (captureBtn) {
       captureBtn.classList.toggle('is-sharp', state === 'sharp');
     }
@@ -481,14 +411,12 @@
     const errIcon = el('scanner-error-icon');
     const errTitle = el('scanner-error-title');
     const errMsg = el('scanner-error-msg');
-    const frame = el('scanner-frame');
     const pill = el('scanner-quality-pill');
     const bottomHud = el('scanner-bottom-hud');
     const flashBtn = el('scanner-flash-btn');
     const switchBtn = el('scanner-switch-btn');
     const retryBtn = el('scanner-retry-btn');
 
-    if (frame) frame.style.display = 'none';
     if (pill) pill.style.display = 'none';
     if (bottomHud) bottomHud.style.display = 'none';
     if (flashBtn) flashBtn.style.display = 'none';
@@ -525,13 +453,11 @@
 
   function hideCameraFallback() {
     const errBox = el('scanner-error-box');
-    const frame = el('scanner-frame');
     const pill = el('scanner-quality-pill');
     const bottomHud = el('scanner-bottom-hud');
     const switchBtn = el('scanner-switch-btn');
 
     if (errBox) errBox.classList.remove('show');
-    if (frame) frame.style.display = 'flex';
     if (pill) pill.style.display = 'inline-flex';
     if (bottomHud) bottomHud.style.display = 'flex';
     if (switchBtn) switchBtn.style.display = 'inline-flex';
@@ -941,11 +867,12 @@
     const video = el('scanner-video');
     if (!video || !video.videoWidth || video.readyState < 2) return;
 
-    const crop = computeFrameCrop(video, 0);
+    const crop = computeStageCrop(video, 'stage', 0.08);
     if (!crop) return;
 
-    const W = _frameShape === 'wide' ? 192 : _frameShape === 'tall' ? 120 : 128;
-    const H = _frameShape === 'wide' ? 144 : _frameShape === 'tall' ? 264 : 256;
+    const isPortraitCrop = crop.sh >= crop.sw;
+    const W = isPortraitCrop ? 160 : 224;
+    const H = isPortraitCrop ? 224 : 160;
     if (!_analysisCanvas || _analysisSize.w !== W || _analysisSize.h !== H) {
       _analysisCanvas = document.createElement('canvas');
       _analysisCanvas.width = W;
@@ -1050,7 +977,7 @@
     } else if (state === 'moving') {
       _autoSharpSince = 0;
       updateAutoRing(0);
-      setQualityFeedback('moving', 'Hold steady inside the frame');
+      setQualityFeedback('moving', 'Hold camera steady');
     } else if (state === 'sharp') {
       const now = Date.now();
       if (_autoCaptureEnabled && now >= _autoCooldownUntil) {
@@ -1088,7 +1015,6 @@
 
     initCameraGestures();
     bindResizeObservers();
-    applyFrameShapeUI();
     requestAnimationFrame(recomputeDimensions);
     applyAutoCaptureUI();
     setScannerStep('camera');
@@ -1207,7 +1133,7 @@
     }
 
     try {
-      const crop = computeFrameCrop(video, 0.03) || {
+      const crop = computeStageCrop(video, 'visible', 0) || {
         sx: 0,
         sy: 0,
         sw: video.videoWidth,
@@ -1332,7 +1258,6 @@
 
     const fd = new FormData();
     fd.append('receipt', _capturedBlob, 'receipt.jpg');
-    fd.append('provider', getSelectedProvider());
 
     // Clear photo from UI & memory immediately after packaging into FormData
     clearCapturedPhoto();

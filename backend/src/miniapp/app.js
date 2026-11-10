@@ -435,16 +435,6 @@ function selectMiniappProvider(p) {
 
   const isCbe = (p === 'CBE');
 
-  // Update vform-scan buttons
-  const scanCbe = document.getElementById('vscan-prov-cbe');
-  const scanTb = document.getElementById('vscan-prov-telebirr');
-  if (scanCbe && scanTb) {
-    scanCbe.style.background = isCbe ? 'rgba(10, 132, 255, 0.2)' : 'transparent';
-    scanCbe.style.border = isCbe ? '2px solid var(--button)' : '1px solid var(--glass-border)';
-    scanTb.style.background = !isCbe ? 'rgba(10, 132, 255, 0.2)' : 'transparent';
-    scanTb.style.border = !isCbe ? '2px solid var(--button)' : '1px solid var(--glass-border)';
-  }
-
   // Update vform-image buttons
   const imgCbe = document.getElementById('vimg-prov-cbe');
   const imgTb = document.getElementById('vimg-prov-telebirr');
@@ -454,11 +444,6 @@ function selectMiniappProvider(p) {
     imgTb.style.background = !isCbe ? 'rgba(10, 132, 255, 0.2)' : 'transparent';
     imgTb.style.border = !isCbe ? '2px solid var(--button)' : '1px solid var(--glass-border)';
   }
-
-  // Update scanner & preview provider pills
-  document.querySelectorAll('.sc-provider-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.provider === p);
-  });
 
   // Sync with manual dropdown
   const manualSel = document.getElementById('vmanual-provider');
