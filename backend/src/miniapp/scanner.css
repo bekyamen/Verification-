@@ -40,7 +40,7 @@
   overflow: hidden;
 }
 
-/* ── Live Video & Visual Overlays ─────────────────────────────────────────── */
+/* ── Live Video & Overlays ────────────────────────────────────────────────── */
 #scanner-video {
   position: absolute;
   inset: 0;
@@ -60,7 +60,7 @@
   background: #fff;
   opacity: 0;
   pointer-events: none;
-  z-index: 40;
+  z-index: 45;
 }
 #scanner-shutter-flash.flash {
   animation: scShutterFlash 0.22s ease-out forwards;
@@ -70,7 +70,6 @@
   100% { opacity: 0; }
 }
 
-/* Tap-to-focus ring */
 #scanner-focus-ring {
   position: absolute;
   width: 64px;
@@ -79,10 +78,10 @@
   margin-top: -32px;
   border: 2px solid var(--button, #0a84ff);
   border-radius: 14px;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 14px rgba(10, 132, 255, 0.45);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 14px rgba(10, 132, 255, 0.5);
   pointer-events: none;
   opacity: 0;
-  z-index: 15;
+  z-index: 18;
 }
 #scanner-focus-ring.active {
   animation: scFocusPulse 0.95s ease-out forwards;
@@ -94,7 +93,7 @@
   100% { opacity: 0; transform: scale(1); }
 }
 
-/* ── Top HUD Bar ──────────────────────────────────────────────────────────── */
+/* ── Top Overlay Header (Close + Verify Payment + Flash/Switch) ───────────── */
 .sc-top-bar {
   position: absolute;
   top: 0;
@@ -103,37 +102,61 @@
   z-index: 30;
   padding: calc(10px + var(--sc-safe-top)) calc(14px + var(--sc-safe-right)) 14px calc(14px + var(--sc-safe-left));
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
-  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.78) 0%, rgba(0, 0, 0, 0.35) 65%, transparent 100%);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.45) 65%, transparent 100%);
   pointer-events: none;
 }
 .sc-top-bar > * {
   pointer-events: auto;
 }
 
+.sc-top-center {
+  flex: 1;
+  text-align: center;
+  padding: 2px 4px 0;
+  min-width: 0;
+}
+.sc-top-title {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: #fff;
+  line-height: 1.2;
+}
+.sc-top-subtitle {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.78);
+  line-height: 1.35;
+  margin-top: 3px;
+}
+
 .sc-icon-btn {
   min-width: 48px;
   height: 48px;
-  padding: 0 12px;
-  border-radius: 24px;
-  background: rgba(28, 28, 30, 0.78);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  background: rgba(34, 38, 46, 0.68);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   color: #fff;
-  font-size: 20px;
-  font-weight: 600;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   transition: transform 0.14s ease, background 0.18s ease, border-color 0.18s ease;
 }
+.sc-icon-btn.bare {
+  background: transparent;
+  border-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
 .sc-icon-btn:active {
-  transform: scale(0.93);
-  background: rgba(58, 58, 62, 0.9);
+  transform: scale(0.92);
+  background: rgba(58, 62, 72, 0.85);
 }
 .sc-icon-btn.is-on {
   background: rgba(255, 159, 10, 0.28);
@@ -141,44 +164,15 @@
   color: #ffd60a;
 }
 
-.sc-top-slot {
+.sc-top-right-group {
   min-width: 48px;
-  height: 48px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 8px;
 }
 
-.sc-provider-pill {
-  display: inline-flex;
-  align-items: center;
-  background: rgba(28, 28, 30, 0.82);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  padding: 4px;
-  border-radius: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  gap: 2px;
-}
-.sc-provider-btn {
-  min-height: 44px;
-  padding: 0 14px;
-  border-radius: 22px;
-  border: none;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.72);
-  transition: background 0.18s ease, color 0.18s ease;
-  white-space: nowrap;
-}
-.sc-provider-btn.active {
-  background: var(--button, #0a84ff);
-  color: #fff;
-}
-
-/* ── Camera Stage & Guide Frame ───────────────────────────────────────────── */
+/* ── Camera Stage, Compact Toolbar, Giant Blue-Corner Frame, Tip Pill ─────── */
 #scanner-stage {
   position: relative;
   width: 100%;
@@ -187,71 +181,116 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: calc(68px + var(--sc-safe-top)) calc(12px + var(--sc-safe-right)) calc(152px + var(--sc-safe-bottom)) calc(12px + var(--sc-safe-left));
+  padding: calc(74px + var(--sc-safe-top)) calc(12px + var(--sc-safe-right)) calc(122px + var(--sc-safe-bottom)) calc(12px + var(--sc-safe-left));
   z-index: 10;
-}
-#scanner-stage.has-zoom {
-  padding-bottom: calc(184px + var(--sc-safe-bottom));
+  gap: 10px;
 }
 
-#scanner-hint-top {
-  margin-bottom: 10px;
-  padding: 6px 14px;
-  border-radius: 20px;
-  background: rgba(18, 18, 20, 0.76);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
+/* Compact top utility strip inside stage */
+.sc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  z-index: 16;
+  max-width: 100%;
+}
+
+.sc-pill-group {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(18, 22, 28, 0.78);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  font-size: 13px;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.94);
-  text-align: center;
-  z-index: 12;
-  pointer-events: none;
-  white-space: nowrap;
+  border-radius: 22px;
+  padding: 2px;
+  gap: 2px;
 }
 
-/* Large responsive guide frame (~90% width x ~70% height) */
+.sc-seg-btn {
+  min-height: 36px;
+  padding: 0 11px;
+  border-radius: 18px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+.sc-seg-btn.active {
+  background: var(--button, #0a84ff);
+  color: #fff;
+}
+.sc-seg-btn.subtle.active {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.sc-mini-pill-btn {
+  min-height: 40px;
+  padding: 0 11px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(18, 22, 28, 0.78);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.18s ease;
+}
+.sc-mini-pill-btn.active {
+  background: rgba(48, 209, 88, 0.22);
+  border-color: var(--success, #30d158);
+  color: #70f091;
+}
+
+/* Giant Frame (~90% width x ~65-70% height) matching mockup */
 #scanner-frame {
   position: relative;
   border-radius: 18px;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.56);
-  border: 1.5px solid rgba(255, 255, 255, 0.24);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.48);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   pointer-events: none;
   z-index: 8;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
-  padding: 14px;
+  justify-content: center;
   transition: width 0.24s cubic-bezier(.4,0,.2,1), height 0.24s cubic-bezier(.4,0,.2,1), border-color 0.2s ease;
 }
 
 #scanner-frame.frame-tall {
-  width: min(88vw, 520px);
-  height: min(70dvh, calc(100dvh - 252px - var(--sc-safe-top) - var(--sc-safe-bottom)));
-}
-#scanner-stage.has-zoom #scanner-frame.frame-tall {
-  height: min(68dvh, calc(100dvh - 284px - var(--sc-safe-top) - var(--sc-safe-bottom)));
+  width: min(90vw, 520px);
+  height: min(64dvh, calc(100dvh - 295px - var(--sc-safe-top) - var(--sc-safe-bottom)));
+  min-height: 280px;
 }
 
 #scanner-frame.frame-screenshot {
   width: min(92vw, 560px);
-  height: min(56dvh, calc(92vw * 1.15), calc(100dvh - 252px - var(--sc-safe-top) - var(--sc-safe-bottom)));
-}
-#scanner-stage.has-zoom #scanner-frame.frame-screenshot {
-  height: min(54dvh, calc(92vw * 1.15), calc(100dvh - 284px - var(--sc-safe-top) - var(--sc-safe-bottom)));
+  height: min(52dvh, calc(92vw * 1.12), calc(100dvh - 295px - var(--sc-safe-top) - var(--sc-safe-bottom)));
+  min-height: 240px;
 }
 
 #scanner-frame.is-sharp {
-  border-color: rgba(48, 209, 88, 0.55);
+  border-color: rgba(48, 209, 88, 0.45);
 }
 
 .camera-corner {
   position: absolute;
-  width: 34px;
-  height: 34px;
-  border-color: var(--button, #0a84ff);
+  width: 36px;
+  height: 36px;
+  border-color: #0a84ff;
   border-style: solid;
   transition: border-color 0.2s ease;
 }
@@ -266,17 +305,12 @@
 .camera-corner.bl { bottom: -2px; left: -2px; border-width: 0 0 4px 4px; border-bottom-left-radius: 18px; }
 .camera-corner.br { bottom: -2px; right: -2px; border-width: 0 4px 4px 0; border-bottom-right-radius: 18px; }
 
-/* Starting camera indicator centered inside frame */
 #scanner-starting-badge {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  background: rgba(18, 18, 20, 0.85);
+  background: rgba(16, 20, 28, 0.88);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   padding: 16px 22px;
@@ -288,127 +322,52 @@
   pointer-events: none;
 }
 
-/* Live quality pill at bottom inside of frame */
+/* Tip Pill below the frame (matches lightbulb pill in uploaded UI) */
 #scanner-quality-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 14px;
-  border-radius: 20px;
+  gap: 10px;
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: rgba(20, 26, 36, 0.86);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.92);
   font-size: 12px;
-  font-weight: 700;
-  background: rgba(18, 18, 20, 0.82);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  color: #fff;
+  font-weight: 500;
+  line-height: 1.3;
+  max-width: min(330px, 88vw);
+  z-index: 16;
+  pointer-events: none;
   transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-  text-align: center;
-  max-width: 92%;
+}
+#scanner-quality-pill svg {
+  flex-shrink: 0;
+  opacity: 0.9;
 }
 #scanner-quality-pill.state-sharp {
-  background: rgba(20, 62, 34, 0.88);
-  border-color: rgba(48, 209, 88, 0.65);
-  color: #70f091;
+  background: rgba(18, 56, 32, 0.9);
+  border-color: rgba(48, 209, 88, 0.6);
+  color: #82f3a0;
 }
 #scanner-quality-pill.state-warn {
-  background: rgba(66, 42, 8, 0.88);
-  border-color: rgba(255, 159, 10, 0.65);
+  background: rgba(64, 42, 10, 0.9);
+  border-color: rgba(255, 159, 10, 0.6);
   color: #ffd166;
 }
 
-/* ── Bottom HUD Controls ──────────────────────────────────────────────────── */
-#scanner-bottom-hud {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  z-index: 30;
-  padding: 8px calc(16px + var(--sc-safe-right)) calc(14px + var(--sc-safe-bottom)) calc(16px + var(--sc-safe-left));
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.92) 0%, rgba(0, 0, 0, 0.62) 65%, transparent 100%);
-  pointer-events: none;
-}
-#scanner-bottom-hud > * {
-  pointer-events: auto;
-}
-
-/* Shape selector & Auto capture bar */
-.sc-quick-row {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  flex-wrap: nowrap;
-  max-width: 100%;
-}
-
-.sc-shape-group {
-  display: inline-flex;
-  background: rgba(28, 28, 30, 0.85);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 22px;
-  padding: 3px;
-  gap: 2px;
-}
-
-.sc-chip-btn {
-  min-height: 42px;
-  padding: 0 13px;
-  border-radius: 20px;
-  border: none;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.18s ease, color 0.18s ease;
-}
-.sc-chip-btn.active {
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
-}
-
-.sc-auto-btn {
-  min-height: 48px;
-  padding: 0 14px;
-  border-radius: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(28, 28, 30, 0.85);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  transition: all 0.18s ease;
-}
-.sc-auto-btn.active {
-  background: rgba(48, 209, 88, 0.22);
-  border-color: var(--success, #30d158);
-  color: #70f091;
-}
-
-/* Hardware Zoom Slider (hidden when device doesn't support zoom) */
+/* Optional Hardware Zoom Bar */
 #scanner-zoom-wrap {
   display: none;
   align-items: center;
   gap: 10px;
-  width: min(260px, 76vw);
-  padding: 4px 12px;
+  width: min(250px, 72vw);
+  padding: 5px 12px;
   border-radius: 18px;
-  background: rgba(28, 28, 30, 0.78);
+  background: rgba(18, 22, 28, 0.8);
   border: 1px solid rgba(255, 255, 255, 0.14);
+  z-index: 16;
 }
 #scanner-zoom-wrap.show {
   display: flex;
@@ -442,29 +401,79 @@
   color: #fff;
 }
 
-/* Main Shutter Action Bar */
-#scanner-camera-controls {
-  width: 100%;
-  max-width: 380px;
+/* ── Bottom Dark Action Dock (Cancel | Big Blue Shutter | Verify) ─────────── */
+.sc-bottom-dock {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  padding: 14px calc(28px + var(--sc-safe-right)) calc(18px + var(--sc-safe-bottom)) calc(28px + var(--sc-safe-left));
+  background: linear-gradient(to top, rgba(9, 13, 21, 0.97) 0%, rgba(11, 16, 26, 0.90) 75%, rgba(11, 16, 26, 0.65) 100%);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 2px 12px;
 }
 
+.sc-dock-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  min-width: 64px;
+  padding: 0;
+  transition: opacity 0.18s ease, transform 0.14s ease;
+}
+.sc-dock-action:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+.sc-dock-action:not(:disabled):active {
+  transform: scale(0.93);
+}
+
+.sc-dock-circle {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(52, 58, 68, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  transition: background 0.18s ease, box-shadow 0.18s ease;
+}
+.sc-dock-circle.primary {
+  background: #0a84ff;
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 4px 18px rgba(10, 132, 255, 0.45);
+}
+
+/* Center Big Blue Camera Button (Turns green when sharp!) */
 #scanner-capture-btn {
   position: relative;
   width: 78px;
   height: 78px;
   border-radius: 50%;
-  border: 4px solid #fff;
-  background: rgba(255, 255, 255, 0.12);
-  padding: 6px;
+  border: 4px solid rgba(77, 163, 255, 0.55);
+  background: rgba(10, 132, 255, 0.2);
+  padding: 5px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.12s ease, border-color 0.2s ease, opacity 0.2s ease;
+  box-shadow: 0 0 24px rgba(10, 132, 255, 0.35);
+  transition: transform 0.12s ease, border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
 }
 #scanner-capture-btn:disabled {
   opacity: 0.4;
@@ -474,22 +483,34 @@
   transform: scale(0.92);
 }
 #scanner-capture-btn.is-sharp {
-  border-color: var(--success, #30d158);
-  box-shadow: 0 0 22px rgba(48, 209, 88, 0.45);
+  border-color: rgba(48, 209, 88, 0.75);
+  background: rgba(48, 209, 88, 0.22);
+  box-shadow: 0 0 26px rgba(48, 209, 88, 0.5);
 }
 
 #scanner-capture-inner {
   width: 100%;
   height: 100%;
   border-radius: 50%;
-  background: #fff;
-  transition: background 0.2s ease, transform 0.12s ease;
+  background: #0a84ff;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease;
 }
 #scanner-capture-btn.is-sharp #scanner-capture-inner {
   background: var(--success, #30d158);
 }
 
-/* Auto-capture circular progress ring */
+@keyframes scPulseHint {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.09); }
+}
+#scanner-capture-btn.pulse-hint {
+  animation: scPulseHint 0.35s ease 2;
+}
+
 #scanner-auto-ring {
   position: absolute;
   inset: -6px;
@@ -516,7 +537,7 @@
   width: min(360px, 90vw);
   padding: 24px 20px;
   border-radius: 20px;
-  background: rgba(28, 28, 30, 0.94);
+  background: rgba(20, 24, 32, 0.94);
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -536,7 +557,7 @@
   min-height: 48px;
 }
 
-/* ── Preview Viewport ─────────────────────────────────────────────────────── */
+/* ── Preview Viewport (Same Large Frame + Dark Dock) ──────────────────────── */
 #scanner-view-preview {
   display: none;
 }
@@ -547,28 +568,25 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: calc(68px + var(--sc-safe-top)) 14px calc(104px + var(--sc-safe-bottom));
+  gap: 12px;
+  padding: calc(74px + var(--sc-safe-top)) 14px calc(116px + var(--sc-safe-bottom));
 }
 .sc-preview-frame-box {
   position: relative;
-  width: min(90vw, 540px);
-  height: min(70dvh, calc(100dvh - 190px - var(--sc-safe-top) - var(--sc-safe-bottom)));
+  width: min(90vw, 520px);
+  height: min(64dvh, calc(100dvh - 250px - var(--sc-safe-top) - var(--sc-safe-bottom)));
   border-radius: 18px;
-  background: #0c0c0e;
-  border: 2px solid rgba(255, 255, 255, 0.24);
+  background: #0a0d14;
+  border: 1px solid rgba(255, 255, 255, 0.2);
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
 }
-.sc-preview-frame-box.frame-tall {
-  width: min(88vw, 520px);
-  height: min(70dvh, calc(100dvh - 190px - var(--sc-safe-top) - var(--sc-safe-bottom)));
-}
 .sc-preview-frame-box.frame-screenshot {
   width: min(92vw, 560px);
-  height: min(58dvh, calc(92vw * 1.18), calc(100dvh - 190px - var(--sc-safe-top) - var(--sc-safe-bottom)));
+  height: min(54dvh, calc(92vw * 1.12), calc(100dvh - 250px - var(--sc-safe-top) - var(--sc-safe-bottom)));
 }
 #scanner-preview-img {
   width: 100%;
@@ -576,31 +594,37 @@
   object-fit: contain;
   display: block;
 }
-.sc-preview-actions {
+
+.sc-preview-dock {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 16px calc(16px + var(--sc-safe-right)) calc(18px + var(--sc-safe-bottom)) calc(16px + var(--sc-safe-left));
+  padding: 16px calc(24px + var(--sc-safe-right)) calc(18px + var(--sc-safe-bottom)) calc(24px + var(--sc-safe-left));
+  background: linear-gradient(to top, rgba(9, 13, 21, 0.97) 0%, rgba(11, 16, 26, 0.90) 80%, rgba(11, 16, 26, 0.65) 100%);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
-  gap: 12px;
-  z-index: 20;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.96) 0%, rgba(0, 0, 0, 0.72) 70%, transparent 100%);
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  z-index: 25;
 }
-.sc-preview-actions .btn {
+.sc-preview-dock .btn {
   min-height: 52px;
-  font-size: 16px;
   border-radius: 14px;
+  font-size: 16px;
 }
 
-/* ── Verifying Step-by-Step Progress View ─────────────────────────────────── */
+/* ── Verifying Step-by-Step View ──────────────────────────────────────────── */
 #scanner-view-verifying {
   display: none;
   padding: 30px 24px;
 }
 .sc-verify-card {
   width: min(340px, 90vw);
-  background: rgba(28, 28, 30, 0.9);
+  background: rgba(18, 22, 30, 0.94);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 20px;
   padding: 26px 22px;
@@ -627,13 +651,13 @@
   transition: all 0.2s ease;
 }
 .sc-step.active {
-  background: rgba(10, 132, 255, 0.14);
-  border-color: rgba(10, 132, 255, 0.5);
+  background: rgba(10, 132, 255, 0.16);
+  border-color: rgba(10, 132, 255, 0.55);
   color: #fff;
 }
 .sc-step.done {
-  background: rgba(48, 209, 88, 0.12);
-  border-color: rgba(48, 209, 88, 0.45);
+  background: rgba(48, 209, 88, 0.14);
+  border-color: rgba(48, 209, 88, 0.5);
   color: #70f091;
 }
 .sc-step-dot {

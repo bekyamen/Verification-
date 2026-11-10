@@ -6,7 +6,7 @@
   <meta name="description" content="CheckFlow ET — Ethiopian Payment Verification (CBE & Telebirr)" />
   <title>CheckFlow ET</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="scanner.css?v=2" />
+  <link rel="stylesheet" href="scanner.css?v=3" />
   <style>
     /* ── Telegram theme tokens & glassmorphism ───────────────────────────── */
     :root {
@@ -774,7 +774,7 @@
 </div>
 
 <!-- Fullscreen Camera Scanner Modal -->
-<div id="camera-scanner-modal" role="dialog" aria-modal="true" aria-label="Scan Receipt Camera">
+<div id="camera-scanner-modal" role="dialog" aria-modal="true" aria-label="Verify Payment Scanner">
   <input id="scanner-native-camera-input" type="file" accept="image/*" capture="environment" style="display:none;" onchange="handleScannerNativeFile(event)" />
   <input id="scanner-gallery-input" type="file" accept="image/*" style="display:none;" onchange="handleScannerNativeFile(event)" />
 
@@ -784,24 +784,55 @@
     <div id="scanner-shutter-flash"></div>
     <div id="scanner-focus-ring"></div>
 
-    <!-- Top Floating Bar -->
+    <!-- Top Overlay Header -->
     <div class="sc-top-bar">
-      <button type="button" class="sc-icon-btn" onclick="closeCameraScanner()" aria-label="Close camera">✕</button>
+      <button type="button" class="sc-icon-btn bare" onclick="closeCameraScanner()" aria-label="Close scanner">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
 
-      <div class="sc-provider-pill" role="group" aria-label="Bank provider">
-        <button id="modal-prov-cbe" data-provider="CBE" type="button" class="sc-provider-btn active" onclick="selectMiniappProvider('CBE')">🏦 CBE</button>
-        <button id="modal-prov-telebirr" data-provider="TELEBIRR" type="button" class="sc-provider-btn" onclick="selectMiniappProvider('TELEBIRR')">📱 Telebirr</button>
+      <div class="sc-top-center">
+        <div class="sc-top-title">Verify Payment</div>
+        <div class="sc-top-subtitle">Scan the receipt or enter details manually to verify your payment.</div>
       </div>
 
-      <div class="sc-top-slot">
-        <button id="scanner-flash-btn" type="button" class="sc-icon-btn" style="display:none;" onclick="toggleScannerFlash()" aria-label="Toggle flash" aria-pressed="false">⚡</button>
+      <div class="sc-top-right-group">
+        <button id="scanner-switch-btn" type="button" class="sc-icon-btn" onclick="switchScannerCamera()" aria-label="Switch camera" title="Switch camera">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 1l4 4-4 4"></path>
+            <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+            <path d="M7 23l-4-4 4-4"></path>
+            <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+          </svg>
+        </button>
+        <button id="scanner-flash-btn" type="button" class="sc-icon-btn" style="display:none;" onclick="toggleScannerFlash()" aria-label="Toggle flash" aria-pressed="false" title="Flash">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"></path>
+          </svg>
+        </button>
       </div>
     </div>
 
-    <!-- Center Stage: Hint + Giant Frame + Fallback Notice -->
+    <!-- Center Stage: Compact Toolbar + Giant Frame + Lightbulb Tip Pill -->
     <div id="scanner-stage">
-      <div id="scanner-hint-top">Fit the whole receipt inside the frame</div>
+      <div class="sc-toolbar">
+        <div class="sc-pill-group" role="group" aria-label="Bank provider">
+          <button id="modal-prov-cbe" data-provider="CBE" type="button" class="sc-seg-btn active sc-provider-btn" onclick="selectMiniappProvider('CBE')">CBE</button>
+          <button id="modal-prov-telebirr" data-provider="TELEBIRR" type="button" class="sc-seg-btn sc-provider-btn" onclick="selectMiniappProvider('TELEBIRR')">Telebirr</button>
+        </div>
 
+        <div class="sc-pill-group" role="group" aria-label="Frame shape">
+          <button id="scanner-shape-tall" type="button" class="sc-seg-btn subtle active" onclick="setScannerFrameShape('tall')">Tall receipt</button>
+          <button id="scanner-shape-screenshot" type="button" class="sc-seg-btn subtle" onclick="setScannerFrameShape('screenshot')">Screenshot</button>
+        </div>
+
+        <button id="scanner-auto-btn" type="button" class="sc-mini-pill-btn" onclick="toggleScannerAutoCapture()" aria-pressed="false">Auto</button>
+        <button type="button" class="sc-mini-pill-btn" onclick="openGalleryPicker()" aria-label="Choose photo from gallery">🖼️ Photos</button>
+      </div>
+
+      <!-- Giant Blue-Corner Frame -->
       <div id="scanner-frame" class="frame-tall">
         <div class="camera-corner tl"></div>
         <div class="camera-corner tr"></div>
@@ -812,8 +843,23 @@
           <div class="spinner"></div>
           <span>Starting camera...</span>
         </div>
+      </div>
 
-        <div id="scanner-quality-pill">Hold steady inside frame</div>
+      <!-- Lightbulb Tip Pill Below Frame -->
+      <div id="scanner-quality-pill">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 18h6"></path>
+          <path d="M10 22h4"></path>
+          <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"></path>
+        </svg>
+        <span id="scanner-quality-text">Make sure the receipt is flat, well lit and all text is clear.</span>
+      </div>
+
+      <!-- Optional Hardware Zoom Slider -->
+      <div id="scanner-zoom-wrap">
+        <span style="font-size: 12px; color: var(--hint); font-weight: 700;">Zoom</span>
+        <input id="scanner-zoom-slider" type="range" min="1" max="3" step="0.1" value="1" oninput="onScannerZoomInput(this.value)" aria-label="Camera zoom" />
+        <span id="scanner-zoom-val">1.0x</span>
       </div>
 
       <!-- Permission Denied / Unavailable Fallback -->
@@ -829,54 +875,65 @@
       </div>
     </div>
 
-    <!-- Bottom Controls HUD -->
-    <div id="scanner-bottom-hud">
-      <!-- Shape & Auto-Capture Row -->
-      <div class="sc-quick-row">
-        <div class="sc-shape-group" role="group" aria-label="Frame shape">
-          <button id="scanner-shape-tall" type="button" class="sc-chip-btn active" onclick="setScannerFrameShape('tall')">📄 Tall receipt</button>
-          <button id="scanner-shape-screenshot" type="button" class="sc-chip-btn" onclick="setScannerFrameShape('screenshot')">📱 Screenshot</button>
-        </div>
-        <button id="scanner-auto-btn" type="button" class="sc-auto-btn" onclick="toggleScannerAutoCapture()" aria-pressed="false">✨ Auto: OFF</button>
-      </div>
-
-      <!-- Optional Hardware Zoom Slider -->
-      <div id="scanner-zoom-wrap">
-        <span style="font-size: 12px; color: var(--hint); font-weight: 700;">Zoom</span>
-        <input id="scanner-zoom-slider" type="range" min="1" max="3" step="0.1" value="1" oninput="onScannerZoomInput(this.value)" aria-label="Camera zoom" />
-        <span id="scanner-zoom-val">1.0x</span>
-      </div>
-
-      <!-- Shutter Bar -->
-      <div id="scanner-camera-controls">
-        <button type="button" class="sc-icon-btn" onclick="openGalleryPicker()" aria-label="Choose from gallery">🖼️</button>
-
-        <button id="scanner-capture-btn" type="button" onclick="captureScannerPhoto(false)" disabled aria-disabled="true" aria-label="Capture receipt photo">
-          <svg id="scanner-auto-ring" viewBox="0 0 92 92" style="display:none;">
-            <circle id="scanner-auto-ring-circle" cx="46" cy="46" r="42"></circle>
+    <!-- Bottom Dark Dock: Cancel | Big Camera Shutter | Verify -->
+    <div id="scanner-bottom-hud" class="sc-bottom-dock">
+      <button type="button" class="sc-dock-action" onclick="closeCameraScanner()" aria-label="Cancel">
+        <div class="sc-dock-circle">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
           </svg>
-          <div id="scanner-capture-inner"></div>
-        </button>
+        </div>
+        <span>Cancel</span>
+      </button>
 
-        <button id="scanner-switch-btn" type="button" class="sc-icon-btn" onclick="switchScannerCamera()" aria-label="Switch camera">🔄</button>
-      </div>
+      <button id="scanner-capture-btn" type="button" onclick="captureScannerPhoto(false)" disabled aria-disabled="true" aria-label="Capture receipt photo">
+        <svg id="scanner-auto-ring" viewBox="0 0 92 92" style="display:none;">
+          <circle id="scanner-auto-ring-circle" cx="46" cy="46" r="42"></circle>
+        </svg>
+        <div id="scanner-capture-inner">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M9 3L7.17 5H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2h-3.17L15 3H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+          </svg>
+        </div>
+      </button>
+
+      <button id="scanner-cam-verify-btn" type="button" class="sc-dock-action" onclick="promptCaptureBeforeVerify()" aria-label="Verify after capture" style="opacity: 0.45;">
+        <div class="sc-dock-circle primary">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+            <polyline points="12 5 19 12 12 19"></polyline>
+          </svg>
+        </div>
+        <span>Verify</span>
+      </button>
     </div>
   </div>
 
   <!-- Preview Viewport -->
   <div id="scanner-view-preview" class="sc-view">
     <div class="sc-top-bar">
-      <button type="button" class="sc-icon-btn" onclick="closeCameraScanner()" aria-label="Close preview">✕</button>
+      <button type="button" class="sc-icon-btn bare" onclick="closeCameraScanner()" aria-label="Close preview">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
 
-      <div class="sc-provider-pill" role="group" aria-label="Bank provider">
-        <button id="preview-prov-cbe" data-provider="CBE" type="button" class="sc-provider-btn active" onclick="selectMiniappProvider('CBE')">🏦 CBE</button>
-        <button id="preview-prov-telebirr" data-provider="TELEBIRR" type="button" class="sc-provider-btn" onclick="selectMiniappProvider('TELEBIRR')">📱 Telebirr</button>
+      <div class="sc-top-center">
+        <div class="sc-top-title">Verify Payment</div>
+        <div class="sc-top-subtitle">Check that the receipt text & QR code look clear.</div>
       </div>
 
-      <div class="sc-top-slot"></div>
+      <div class="sc-top-right-group"></div>
     </div>
 
     <div class="sc-preview-stage">
+      <div class="sc-pill-group" role="group" aria-label="Bank provider" style="z-index: 16;">
+        <button id="preview-prov-cbe" data-provider="CBE" type="button" class="sc-seg-btn active sc-provider-btn" onclick="selectMiniappProvider('CBE')">CBE</button>
+        <button id="preview-prov-telebirr" data-provider="TELEBIRR" type="button" class="sc-seg-btn sc-provider-btn" onclick="selectMiniappProvider('TELEBIRR')">Telebirr</button>
+      </div>
+
       <div id="scanner-preview-frame-box" class="sc-preview-frame-box frame-tall">
         <img id="scanner-preview-img" alt="Captured receipt preview" />
         <div class="camera-corner tl"></div>
@@ -886,9 +943,13 @@
       </div>
     </div>
 
-    <div class="sc-preview-actions">
-      <button id="scanner-retake-btn" type="button" class="btn secondary" onclick="retakeScannerPhoto()" style="flex: 1;">🔄 Retake</button>
-      <button id="scanner-verify-btn" type="button" class="btn" onclick="verifyScannerPhoto()" style="flex: 1.5;">⚡ Verify</button>
+    <div class="sc-preview-dock">
+      <button id="scanner-retake-btn" type="button" class="btn secondary" onclick="retakeScannerPhoto()" style="flex: 1;">
+        ↺ Retake
+      </button>
+      <button id="scanner-verify-btn" type="button" class="btn" onclick="verifyScannerPhoto()" style="flex: 1.4;">
+        Verify →
+      </button>
     </div>
   </div>
 
@@ -915,7 +976,7 @@
 
 <div id="toast"></div>
 
-<script src="app.js?v=2"></script>
-<script src="scanner.js?v=2"></script>
+<script src="app.js?v=3"></script>
+<script src="scanner.js?v=3"></script>
 </body>
 </html>

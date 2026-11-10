@@ -284,7 +284,7 @@
     if (btn) {
       btn.classList.toggle('active', _autoCaptureEnabled);
       btn.setAttribute('aria-pressed', _autoCaptureEnabled ? 'true' : 'false');
-      btn.textContent = _autoCaptureEnabled ? '✨ Auto: ON' : '✨ Auto: OFF';
+      btn.textContent = _autoCaptureEnabled ? 'Auto: ON' : 'Auto';
     }
     const ring = el('scanner-auto-ring');
     if (ring) ring.style.display = _autoCaptureEnabled ? 'block' : 'none';
@@ -324,6 +324,7 @@
   function setQualityFeedback(state, text) {
     const frame = el('scanner-frame');
     const pill = el('scanner-quality-pill');
+    const textEl = el('scanner-quality-text');
     const captureBtn = el('scanner-capture-btn');
 
     if (frame) {
@@ -337,6 +338,10 @@
       pill.classList.remove('state-sharp', 'state-warn');
       if (state === 'sharp') pill.classList.add('state-sharp');
       else if (state === 'dark' || state === 'moving') pill.classList.add('state-warn');
+    }
+    if (textEl) {
+      textEl.textContent = text;
+    } else if (pill) {
       pill.textContent = text;
     }
   }
@@ -389,15 +394,19 @@
     const errTitle = el('scanner-error-title');
     const errMsg = el('scanner-error-msg');
     const frame = el('scanner-frame');
-    const hint = el('scanner-hint-top');
+    const toolbar = document.querySelector('#scanner-stage .sc-toolbar');
+    const pill = el('scanner-quality-pill');
     const bottomHud = el('scanner-bottom-hud');
     const flashBtn = el('scanner-flash-btn');
+    const switchBtn = el('scanner-switch-btn');
     const retryBtn = el('scanner-retry-btn');
 
     if (frame) frame.style.display = 'none';
-    if (hint) hint.style.display = 'none';
+    if (toolbar) toolbar.style.display = 'none';
+    if (pill) pill.style.display = 'none';
     if (bottomHud) bottomHud.style.display = 'none';
     if (flashBtn) flashBtn.style.display = 'none';
+    if (switchBtn) switchBtn.style.display = 'none';
     if (errBox) errBox.classList.add('show');
 
     if (reasonType === 'denied') {
@@ -431,13 +440,17 @@
   function hideCameraFallback() {
     const errBox = el('scanner-error-box');
     const frame = el('scanner-frame');
-    const hint = el('scanner-hint-top');
+    const toolbar = document.querySelector('#scanner-stage .sc-toolbar');
+    const pill = el('scanner-quality-pill');
     const bottomHud = el('scanner-bottom-hud');
+    const switchBtn = el('scanner-switch-btn');
 
     if (errBox) errBox.classList.remove('show');
     if (frame) frame.style.display = 'flex';
-    if (hint) hint.style.display = 'block';
+    if (toolbar) toolbar.style.display = 'flex';
+    if (pill) pill.style.display = 'inline-flex';
     if (bottomHud) bottomHud.style.display = 'flex';
+    if (switchBtn) switchBtn.style.display = 'inline-flex';
   }
 
   // ── Live Camera Hardware Lifecycle ─────────────────────────────────────────
@@ -639,7 +652,7 @@
       updateAutoRing(0);
 
       setStartingState(false);
-      setQualityFeedback('idle', 'Hold steady inside frame');
+      setQualityFeedback('idle', 'Make sure the receipt is flat, well lit and all text is clear.');
       startQualityLoop();
     } catch (err) {
       if (attemptId !== _cameraAttemptId) return;
@@ -944,11 +957,11 @@
     if (state === 'dark') {
       _autoSharpSince = 0;
       updateAutoRing(0);
-      setQualityFeedback('dark', '💡 Too dark — turn on flash or find more light');
+      setQualityFeedback('dark', 'Too dark — turn on flash or find more light');
     } else if (state === 'moving') {
       _autoSharpSince = 0;
       updateAutoRing(0);
-      setQualityFeedback('moving', '✋ Hold steady');
+      setQualityFeedback('moving', 'Hold steady inside the frame');
     } else if (state === 'sharp') {
       const now = Date.now();
       if (_autoCaptureEnabled && now >= _autoCooldownUntil) {
@@ -956,7 +969,7 @@
         const elapsed = now - _autoSharpSince;
         const progress = Math.min(1, elapsed / 1000);
         updateAutoRing(progress);
-        setQualityFeedback('sharp', '✨ Sharp — auto-capturing...');
+        setQualityFeedback('sharp', 'Sharp — capturing automatically...');
         if (elapsed >= 1000) {
           _autoSharpSince = 0;
           updateAutoRing(0);
@@ -964,12 +977,12 @@
         }
       } else {
         updateAutoRing(0);
-        setQualityFeedback('sharp', '✅ Looks sharp — tap to capture');
+        setQualityFeedback('sharp', 'Looks sharp — tap camera button to capture');
       }
     } else {
       _autoSharpSince = 0;
       updateAutoRing(0);
-      setQualityFeedback('blurry', '✋ Hold steady inside frame');
+      setQualityFeedback('blurry', 'Make sure the receipt is flat, well lit and all text is clear.');
     }
   }
 
@@ -1060,6 +1073,17 @@
     if (!input) return;
     _pickingNativeFile = true;
     input.click();
+  };
+
+  window.promptCaptureBeforeVerify = function () {
+    safeHaptic('light');
+    const btn = el('scanner-capture-btn');
+    if (btn) {
+      btn.classList.remove('pulse-hint');
+      void btn.offsetWidth;
+      btn.classList.add('pulse-hint');
+    }
+    safeToast('Tap the blue camera button to take a photo first');
   };
 
   // ── Instant Capture (Crop to frame, max 1400px wide, JPEG 0.85) ────────────
@@ -1162,7 +1186,7 @@
     const streamAlive = Boolean(_stream && _videoTrack && _videoTrack.readyState === 'live');
     if (streamAlive) {
       setStartingState(false);
-      setQualityFeedback('idle', 'Hold steady inside frame');
+      setQualityFeedback('idle', 'Make sure the receipt is flat, well lit and all text is clear.');
       if (_flashBeforePreview && _supportsTorch) {
         setTorch(true);
       }
