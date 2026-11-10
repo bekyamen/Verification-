@@ -21,7 +21,9 @@
  *   /status            → Dynamic bot status & statistics
  */
 
-import { Bot, Context, InlineKeyboard } from 'grammy';
+import { Bot, Context, GrammyError, InlineKeyboard, webhookCallback } from 'grammy';
+import crypto from 'crypto';
+import type express from 'express';
 import axios from 'axios';
 import https from 'https';
 import { getRegisteredUser, TelegramUserContext } from './auth';
@@ -815,7 +817,190 @@ export function createBot(): Bot {
   return bot;
 }
 
-/** Start the bot in long-polling mode */
+export const TELEGRAM_WEBHOOK_PATH = '/api/telegram/webhook';
+
+const getWebhookBaseUrl = () =>
+  (process.env.TELEGRAM_WEBHOOK_URL || process.env.RENDER_EXTERNAL_URL || '').trim().replace(/\/+$/, '');
+
+function shouldUseWebhook(): boolean {
+  const mode = (process.env.TELEGRAM_MODE ?? '').trim().toLowerCase();
+  if (mode === 'polling' || process.env.TELEGRAM_POLLING === 'true') {
+    return false;
+  }
+  const baseUrl = getWebhookBaseUrl();
+  return baseUrl.startsWith('https://');
+}
+
+function getWebhookSecretToken(): string {
+  const explicit = (process.env.TELEGRAM_WEBHOOK_SECRET ?? '').trim();
+  if (explicit) return explicit;
+  return crypto
+    .createHmac('sha256', BOT_TOKEN())
+    .update('checkflow-tg-webhook-v1')
+    .digest('hex');
+}
+
+let activeBot: Bot | null = null;
+let webhookRequestHandler: ((req: express.Request, res: express.Response) => Promise<void> | void) | null = null;
+let retryTimer: NodeJS.Timeout | null = null;
+let isShuttingDown = false;
+
+function getOrCreateBot(): Bot {
+  if (!activeBot) {
+    activeBot = createBot();
+  }
+  return activeBot;
+}
+
+function clearRetryTimer(): void {
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+}
+
+function scheduleBotRetry(nextAttempt: number, delayMs: number): void {
+  clearRetryTimer();
+  if (isShuttingDown) return;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    void runBotLoop(nextAttempt);
+  }, delayMs);
+  retryTimer.unref?.();
+}
+
+/**
+ * Express middleware handling incoming Telegram webhook POSTs when webhook mode is enabled
+ * (e.g. on Render where RENDER_EXTERNAL_URL is set).
+ */
+export function getTelegramWebhookMiddleware(): express.RequestHandler {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!shouldUseWebhook()) {
+      res.status(404).json({ ok: false, error: 'Telegram webhook mode is not active' });
+      return;
+    }
+    if (validateBotConfig().length > 0) {
+      res.status(503).json({ ok: false, error: 'Telegram bot is not configured' });
+      return;
+    }
+
+    if (!webhookRequestHandler) {
+      const bot = getOrCreateBot();
+      webhookRequestHandler = webhookCallback(bot, 'express', {
+        onTimeout: 'return',
+        timeoutMilliseconds: 25_000,
+        secretToken: getWebhookSecretToken(),
+      });
+    }
+
+    Promise.resolve(webhookRequestHandler(req, res)).catch(next);
+  };
+}
+
+async function runBotLoop(attempt = 1): Promise<void> {
+  if (isShuttingDown) return;
+
+  if (shouldUseWebhook()) {
+    const webhookUrl = `${getWebhookBaseUrl()}${TELEGRAM_WEBHOOK_PATH}`;
+    try {
+      const bot = getOrCreateBot();
+      await bot.init();
+      if (bot.botInfo?.username) {
+        _botUsername = bot.botInfo.username;
+        logger.info(`[telegram] Bot username: @${_botUsername}`);
+      }
+
+      await bot.api.setWebhook(webhookUrl, {
+        secret_token: getWebhookSecretToken(),
+        drop_pending_updates: false,
+      });
+
+      logger.info(`[telegram] ✅ Bot @${_botUsername ?? 'bot'} webhook active → ${webhookUrl} (Multi-tenant mode)`);
+      return;
+    } catch (err: any) {
+      if (isShuttingDown) return;
+      const retryAfterSec = typeof err?.parameters?.retry_after === 'number' ? err.parameters.retry_after : 0;
+      const delayMs = Math.max(retryAfterSec * 1000, Math.min(30_000, 5_000 * attempt));
+      logger.error(`[telegram] ❌ Webhook setup error: ${err?.message ?? err}`);
+      logger.info(`[telegram] Retrying webhook registration in ${Math.round(delayMs / 1000)}s...`);
+      scheduleBotRetry(attempt + 1, delayMs);
+      return;
+    }
+  }
+
+  // Long-polling mode (local development or explicit TELEGRAM_MODE=polling)
+  let bot: Bot | null = null;
+  let currentAttempt = attempt;
+  try {
+    bot = createBot();
+    activeBot = bot;
+    webhookRequestHandler = null;
+
+    logger.info('[telegram] Clearing any existing webhook...');
+    await bot.api.deleteWebhook({ drop_pending_updates: false });
+    if (isShuttingDown) return;
+
+    logger.info('[telegram] Webhook cleared — starting long-poll...');
+    await getBotUsername(bot);
+    if (isShuttingDown) return;
+
+    await bot.start({
+      drop_pending_updates: false,
+      onStart: (info) => {
+        currentAttempt = 1;
+        logger.info(`[telegram] ✅ Bot @${info.username} is online and polling (Multi-tenant mode)`);
+      },
+    });
+  } catch (err: any) {
+    if (isShuttingDown) return;
+
+    const isConflict =
+      (err instanceof GrammyError && err.error_code === 409) ||
+      String(err?.message ?? '').includes('409');
+
+    const retryAfterSec = typeof err?.parameters?.retry_after === 'number' ? err.parameters.retry_after : 0;
+    const baseDelayMs = isConflict
+      ? Math.min(30_000, 10_000 * currentAttempt)
+      : Math.min(30_000, 5_000 * currentAttempt);
+    const delayMs = Math.max(retryAfterSec * 1000, baseDelayMs);
+
+    if (isConflict) {
+      logger.warn(
+        `[telegram] ⚠️ 409 Conflict on getUpdates (another bot instance is polling with this token). HTTP API remains online; retrying in ${Math.round(delayMs / 1000)}s...`
+      );
+    } else {
+      logger.error(`[telegram] ❌ Fatal startup error: ${err?.message ?? err}`);
+      logger.info(`[telegram] Retrying bot startup in ${Math.round(delayMs / 1000)}s...`);
+    }
+
+    if (bot?.isRunning()) {
+      await bot.stop().catch(() => {});
+    }
+    if (activeBot === bot) {
+      activeBot = null;
+    }
+
+    scheduleBotRetry(currentAttempt + 1, delayMs);
+  }
+}
+
+/** Gracefully stop polling (preserves webhook across rolling deploys) */
+export async function stopBot(): Promise<void> {
+  isShuttingDown = true;
+  clearRetryTimer();
+
+  const bot = activeBot;
+  if (bot && bot.isRunning()) {
+    logger.info('[telegram] Stopping polling bot cleanly...');
+    try {
+      await bot.stop();
+    } catch (err: any) {
+      logger.warn(`[telegram] Error stopping bot: ${err?.message ?? err}`);
+    }
+  }
+}
+
+/** Start the bot (webhook mode on HTTPS hosts like Render, long-polling locally) */
 export function startBot(): void {
   const configErrors = validateBotConfig();
   if (configErrors.length > 0) {
@@ -824,29 +1009,12 @@ export function startBot(): void {
     return;
   }
 
+  isShuttingDown = false;
+  clearRetryTimer();
+
   logger.info('[telegram] Initialising bot...');
   logger.info('[telegram] Architecture: Multi-tenant (Dynamic user matching enabled)');
+  logger.info(`[telegram] Mode: ${shouldUseWebhook() ? 'Webhook' : 'Long-polling'}`);
 
-  (async () => {
-    try {
-      const bot = createBot();
-
-      logger.info('[telegram] Clearing any existing webhook...');
-      await bot.api.deleteWebhook({ drop_pending_updates: false });
-      logger.info('[telegram] Webhook cleared — starting long-poll...');
-
-      await getBotUsername(bot);
-
-      bot.start({
-        onStart: (info) => {
-          logger.info(`[telegram] ✅ Bot @${info.username} is online and polling (Multi-tenant mode)`);
-        },
-      });
-
-    } catch (err: any) {
-      logger.error(`[telegram] ❌ Fatal startup error: ${err.message ?? err}`);
-      logger.info('[telegram] Retrying bot startup in 15 s...');
-      setTimeout(() => startBot(), 15_000);
-    }
-  })();
+  void runBotLoop(1);
 }

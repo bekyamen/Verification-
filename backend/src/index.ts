@@ -12,7 +12,7 @@ import miniappRoutes from './routes/miniapp.routes';
 import cashiersRoutes from './routes/cashiers.routes';
 import { warmOcrWorkers, warmOcr } from './services/receiptParser.service';
 import { warmPdf } from './services/verifyCBE';
-import { startBot } from './telegram/bot';
+import { startBot, stopBot, getTelegramWebhookMiddleware, TELEGRAM_WEBHOOK_PATH } from './telegram/bot';
 
 
 const app = express();
@@ -25,6 +25,7 @@ app.use(cookieParser());
 
 // Health check (used by uptime monitors to keep service alive)
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+app.post(TELEGRAM_WEBHOOK_PATH, getTelegramWebhookMiddleware());
 
 // Mount API routes
 app.use('/api', apiRoutes);
@@ -50,7 +51,33 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   res.status(500).json({ error: 'Something went wrong!', details: err.message });
 });
 
-app.listen(port, () => {
+let server: ReturnType<typeof app.listen> | null = null;
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[server] Received ${signal}, shutting down gracefully...`);
+  const forceExitTimer = setTimeout(() => process.exit(0), 5_000);
+  forceExitTimer.unref();
+
+  await stopBot();
+  if (server) {
+    server.close(() => process.exit(0));
+    server.closeIdleConnections?.();
+  } else {
+    process.exit(0);
+  }
+}
+
+process.on('SIGTERM', () => {
+  void gracefulShutdown('SIGTERM');
+});
+process.on('SIGINT', () => {
+  void gracefulShutdown('SIGINT');
+});
+
+server = app.listen(port, () => {
   console.log(`CheckFlow ET Backend Engine running on port ${port}`);
   // Also listen on unix socket for local testing
   try {
