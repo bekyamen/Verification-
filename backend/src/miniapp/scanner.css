@@ -390,9 +390,24 @@
   width: 100%;
   max-width: 390px;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
   padding: 0 10px;
+}
+
+.sc-dock-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.sc-shutter-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
 .sc-dock-action {

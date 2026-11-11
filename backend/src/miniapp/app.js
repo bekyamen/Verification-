@@ -3,6 +3,7 @@
  * All API calls go through /api/* (same origin).
  */
 
+
 'use strict';
 
 // ── Telegram WebApp SDK ─────────────────────────────────────────────────────
@@ -12,6 +13,8 @@ if (tg) {
   tg.expand();
   try { tg.enableClosingConfirmation(); } catch (e) {}
 }
+
+
 
 // ── State ────────────────────────────────────────────────────────────────────
 let _token         = localStorage.getItem('cf_token') || null;
@@ -584,7 +587,7 @@ function switchVerifyTab(tab) {
 
   if (btnPhoto) btnPhoto.classList.toggle('active', _activeVerifyTab === 'photo');
   if (btnRef) btnRef.classList.toggle('active', _activeVerifyTab === 'ref');
-  if (formPhoto) formPhoto.style.display = _activeVerifyTab === 'photo' ? 'flex' : 'none';
+  if (formPhoto) formPhoto.style.display = _activeVerifyTab === 'photo' ? 'block' : 'none';
   if (formRef) formRef.style.display = _activeVerifyTab === 'ref' ? 'block' : 'none';
 }
 
@@ -970,9 +973,123 @@ function renderVerifyResult(result) {
   loadVerifyHistory();
 }
 
+let _stagedGalleryFile = null;
+let _stagedGalleryUrl = null;
+let _stagedVerifying = false;
+let _qrScanToken = 0;
+
 function triggerQuickUpload() {
   const input = document.getElementById('vimage-file');
   if (input) input.click();
+}
+
+function classifyClientQrPayload(raw) {
+  const trimmed = String(raw || '').trim();
+  if (/cbe\.com\.et|apps\.cbe|mbreceipt|\bFT[A-Z0-9]{8,16}\b/i.test(trimmed)) {
+    return 'CBE QR detected — reference will be taken from QR.';
+  }
+  if (/ethiotelecom\.et|transactioninfo|telebirr/i.test(trimmed)) {
+    return 'Telebirr QR detected — reference will be taken from QR.';
+  }
+  return 'QR code detected — reference will be taken from QR.';
+}
+
+function scanCanvasForQr(jsQR, img, sx, sy, sw, sh, maxSide) {
+  const scale = Math.min(1, maxSide / Math.max(sw, sh, 1));
+  const dw = Math.max(1, Math.round(sw * scale));
+  const dh = Math.max(1, Math.round(sh * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = dw;
+  canvas.height = dh;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, dw, dh);
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, dw, dh);
+  const imgData = ctx.getImageData(0, 0, dw, dh);
+  const hit = jsQR(imgData.data, dw, dh, { inversionAttempts: 'attemptBoth' });
+  return hit && hit.data ? String(hit.data).trim() : null;
+}
+
+async function detectClientQrCaption(file, objectUrl) {
+  if (file.type === 'application/pdf') {
+    return 'PDF receipt selected — tap Verify to check payment.';
+  }
+  const img = await new Promise((resolve) => {
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = () => resolve(null);
+    el.src = objectUrl;
+  });
+  if (!img || !img.naturalWidth || !img.naturalHeight) {
+    return 'Receipt selected — tap Verify to scan and check payment.';
+  }
+
+
+  if (typeof window.BarcodeDetector === 'function') {
+    try {
+      const supported = typeof window.BarcodeDetector.getSupportedFormats === 'function'
+        ? await window.BarcodeDetector.getSupportedFormats()
+        : ['qr_code'];
+      if (supported.includes('qr_code')) {
+        const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+        const results = await detector.detect(img);
+        const raw = results?.[0]?.rawValue?.trim();
+        if (raw) return classifyClientQrPayload(raw);
+      }
+    } catch (_) {}
+  }
+
+  if (typeof window.jsQR === 'function') {
+    const natW = img.naturalWidth;
+    const natH = img.naturalHeight;
+    const fullHit = scanCanvasForQr(window.jsQR, img, 0, 0, natW, natH, 1000);
+    if (fullHit) return classifyClientQrPayload(fullHit);
+    if (natH > 700) {
+      const cropY = Math.floor(natH * 0.25);
+      const lowerHit = scanCanvasForQr(window.jsQR, img, 0, cropY, natW, Math.max(1, natH - cropY), 1000);
+      if (lowerHit) return classifyClientQrPayload(lowerHit);
+    }
+  }
+
+  return 'Receipt selected — tap Verify to scan and check payment.';
+}
+
+function clearStagedGalleryFile() {
+  if (_stagedVerifying) return;
+  _qrScanToken += 1;
+  if (_stagedGalleryUrl) {
+    URL.revokeObjectURL(_stagedGalleryUrl);
+    _stagedGalleryUrl = null;
+  }
+  _stagedGalleryFile = null;
+
+  const idleRow = document.getElementById('vform-photo-idle');
+  const stagedWrap = document.getElementById('vform-photo-staged');
+  const thumbImg = document.getElementById('vimage-thumb-img');
+  const thumbPdf = document.getElementById('vimage-thumb-pdf');
+  const noteEl = document.getElementById('vimage-staged-note');
+  const fileInput = document.getElementById('vimage-file');
+
+  if (thumbImg) { thumbImg.src = ''; thumbImg.style.display = 'none'; }
+  if (thumbPdf) thumbPdf.style.display = 'none';
+  if (noteEl) noteEl.textContent = '';
+  if (stagedWrap) stagedWrap.style.display = 'none';
+  if (idleRow) idleRow.style.display = 'flex';
+  if (fileInput) fileInput.value = '';
+}
+
+function setStagedVerifyLoading(isLoading) {
+  _stagedVerifying = isLoading;
+  const verifyBtn = document.getElementById('vimage-verify-btn');
+  const clearBtn = document.getElementById('vimage-clear-btn');
+  if (clearBtn) clearBtn.disabled = isLoading;
+  if (verifyBtn) {
+    verifyBtn.disabled = isLoading;
+    verifyBtn.innerHTML = isLoading
+      ? '<span class="vp-spinner-dark"></span><span>Verifying...</span>'
+      : '<span>Verify</span>';
+  }
 }
 
 async function handleQuickUploadFile(event) {
@@ -980,12 +1097,57 @@ async function handleQuickUploadFile(event) {
   const file = fileInput?.files?.[0];
   if (!file) return;
 
-  const uploadBtn = document.getElementById('vimage-btn');
-  const uploadIcon = document.getElementById('vimage-icon');
-  if (uploadBtn) uploadBtn.disabled = true;
-  if (uploadIcon) uploadIcon.style.opacity = '0.45';
+  haptic('selection');
+  if (_stagedGalleryUrl) {
+    URL.revokeObjectURL(_stagedGalleryUrl);
+    _stagedGalleryUrl = null;
+  }
 
-  toast('Optimizing & verifying receipt…');
+  _stagedGalleryFile = file;
+  const isPdf = file.type === 'application/pdf';
+  _stagedGalleryUrl = isPdf ? null : URL.createObjectURL(file);
+
+  const idleRow = document.getElementById('vform-photo-idle');
+  const stagedWrap = document.getElementById('vform-photo-staged');
+  const thumbImg = document.getElementById('vimage-thumb-img');
+  const thumbPdf = document.getElementById('vimage-thumb-pdf');
+  const noteEl = document.getElementById('vimage-staged-note');
+
+  if (thumbImg) {
+    if (_stagedGalleryUrl) {
+      thumbImg.src = _stagedGalleryUrl;
+      thumbImg.style.display = 'block';
+    } else {
+      thumbImg.src = '';
+      thumbImg.style.display = 'none';
+    }
+  }
+  if (thumbPdf) thumbPdf.style.display = isPdf ? 'inline-block' : 'none';
+  if (noteEl) noteEl.textContent = isPdf ? 'PDF receipt selected — tap Verify to check payment.' : 'Checking receipt for QR code…';
+  if (idleRow) idleRow.style.display = 'none';
+  if (stagedWrap) stagedWrap.style.display = 'block';
+  if (fileInput) fileInput.value = '';
+
+  const token = ++_qrScanToken;
+  try {
+    const caption = await detectClientQrCaption(file, _stagedGalleryUrl || '');
+    if (_qrScanToken === token && noteEl) {
+      noteEl.textContent = caption;
+    }
+  } catch (_) {
+    if (_qrScanToken === token && noteEl) {
+      noteEl.textContent = 'Receipt selected — tap Verify to scan and check payment.';
+    }
+  }
+}
+
+async function verifyStagedGalleryFile() {
+  if (!_stagedGalleryFile || _stagedVerifying) return;
+  const file = _stagedGalleryFile;
+  haptic('selection');
+  setStagedVerifyLoading(true);
+  toast('Scanning & verifying receipt…');
+
   const isPdf = file.type === 'application/pdf';
   const payloadBlob = isPdf
     ? file
@@ -994,10 +1156,12 @@ async function handleQuickUploadFile(event) {
   const fd = new FormData();
   fd.append('receipt', payloadBlob, isPdf ? (file.name || 'receipt.pdf') : 'receipt.jpg');
 
-  const { ok, data } = await api('POST', '/verify/image', fd, true);
-  if (uploadBtn) uploadBtn.disabled = false;
-  if (uploadIcon) uploadIcon.style.opacity = '1';
-  if (fileInput) fileInput.value = '';
+  const { ok, status, data } = await api('POST', '/verify/image', fd, true);
+  setStagedVerifyLoading(false);
+
+  if (status !== 0) {
+    clearStagedGalleryFile();
+  }
 
   if (!ok) {
     toast('❌ ' + (data?.error || 'Image verification failed'));

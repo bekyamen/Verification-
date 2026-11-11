@@ -418,7 +418,7 @@
     const retryBtn = el('scanner-retry-btn');
 
     if (pill) pill.style.display = 'none';
-    if (bottomHud) bottomHud.style.display = 'none';
+    // if (bottomHud) bottomHud.style.display = 'none';
     if (flashBtn) flashBtn.style.display = 'none';
     if (switchBtn) switchBtn.style.display = 'none';
     if (errBox) errBox.classList.add('show');
@@ -993,7 +993,7 @@
         }
       } else {
         updateAutoRing(0);
-        setQualityFeedback('sharp', 'Looks sharp — tap camera button to capture');
+        setQualityFeedback('sharp', 'Looks sharp — tap Take a picture');
       }
     } else {
       _autoSharpSince = 0;
@@ -1115,7 +1115,7 @@
       void btn.offsetWidth;
       btn.classList.add('pulse-hint');
     }
-    safeToast('Tap the blue camera button to take a photo first');
+    safeToast('Tap Take a picture first');
   };
 
   // ── Instant Capture (Crop to frame, max 1400px wide, JPEG 0.85) ────────────

@@ -6,7 +6,7 @@
   <meta name="description" content="CheckFlow ET — Ethiopian Payment Verification (CBE & Telebirr)" />
   <title>CheckFlow ET</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="scanner.css?v=5" />
+  <link rel="stylesheet" href="scanner.css?v=6" />
   <style>
     /* ── Telegram theme tokens & glassmorphism ───────────────────────────── */
     :root {
@@ -343,6 +343,7 @@
       cursor: pointer; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
       transition: transform 0.14s ease, opacity 0.14s ease;
     }
+    .vp-take-btn, .vp-take-btn span { color: #111827; -webkit-text-fill-color: #111827; }
     .vp-take-btn:active { transform: scale(0.98); opacity: 0.92; }
     .vp-upload-btn {
       width: 56px; min-height: 54px; border-radius: 16px; flex-shrink: 0;
@@ -352,6 +353,44 @@
     }
     .vp-upload-btn:active { transform: scale(0.95); background: #253042; }
     .vp-upload-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .vp-staged-wrap { margin-bottom: 18px; }
+    .vp-staged-wrap .vp-cta-row { align-items: center; margin-bottom: 8px; }
+    .vp-thumb-box { position: relative; width: 54px; height: 54px; flex-shrink: 0; }
+    .vp-thumb-card {
+      width: 54px; height: 54px; border-radius: 12px; overflow: hidden;
+      background: #ffffff; border: 1px solid rgba(255, 255, 255, 0.16);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+    }
+    .vp-thumb-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .vp-thumb-pdf { font-size: 12px; font-weight: 800; color: #dc2626; letter-spacing: 0.4px; }
+    .vp-thumb-clear {
+      position: absolute; top: -6px; right: -6px; width: 22px; height: 22px;
+      border-radius: 50%; border: none; background: #ef4444; color: #ffffff;
+      display: flex; align-items: center; justify-content: center; cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+      transition: transform 0.12s ease, opacity 0.12s ease;
+    }
+    .vp-thumb-clear:active { transform: scale(0.9); }
+    .vp-thumb-clear:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .vp-verify-pill-btn {
+      flex: 1; min-height: 54px; border-radius: 16px; border: none;
+      background: #ffffff; color: #111827; -webkit-text-fill-color: #111827; font-size: 16px; font-weight: 700;
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      cursor: pointer; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+      transition: transform 0.14s ease, opacity 0.14s ease;
+    }
+    .vp-verify-pill-btn span { color: #111827; -webkit-text-fill-color: #111827; }
+    .vp-verify-pill-btn:active { transform: scale(0.98); opacity: 0.92; }
+    .vp-verify-pill-btn:disabled { opacity: 0.72; cursor: not-allowed; }
+    .vp-staged-note { font-size: 13px; color: #8c96a6; line-height: 1.35; padding-left: 2px; }
+    .vp-spinner-dark {
+      width: 17px; height: 17px; border-radius: 50%;
+      border: 2.5px solid rgba(17, 24, 39, 0.2); border-top-color: #111827;
+      animation: spin 0.75s linear infinite;
+    }
 
     .vp-ref-card {
       background: #1b2330; border: 1px solid rgba(255, 255, 255, 0.08);
@@ -688,24 +727,48 @@
   </div>
 
   <!-- Photo / Scan Primary Actions -->
-  <div id="vform-photo" class="vp-cta-row">
-    <button type="button" class="vp-take-btn" onclick="openCameraScanner()">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#111827" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-        <circle cx="12" cy="13" r="4"></circle>
-      </svg>
-      <span>Take a picture</span>
-    </button>
+  <div id="vform-photo">
+    <div id="vform-photo-idle" class="vp-cta-row">
+      <button type="button" class="vp-take-btn" onclick="openCameraScanner()">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#111827" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+          <circle cx="12" cy="13" r="4"></circle>
+        </svg>
+        <span>Take a picture</span>
+      </button>
 
-    <input id="vimage-file" type="file" accept="image/*,application/pdf" style="display:none;" onchange="handleQuickUploadFile(event)" />
-    <button id="vimage-btn" type="button" class="vp-upload-btn" onclick="triggerQuickUpload()" aria-label="Upload receipt screenshot or PDF" title="Upload screenshot or photo">
-      <svg id="vimage-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#e5a922" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="3" y="5" width="14" height="14" rx="2.5"></rect>
-        <circle cx="7.5" cy="9.5" r="1.2" fill="#e5a922" stroke="none"></circle>
-        <path d="M4 17l4-4 3 3 2.5-2.5L17 17"></path>
-        <path d="M19 9V3m0 0l-2.5 2.5M19 3l2.5 2.5"></path>
-      </svg>
-    </button>
+      <input id="vimage-file" type="file" accept="image/*,application/pdf" style="display:none;" onchange="handleQuickUploadFile(event)" />
+      <button id="vimage-btn" type="button" class="vp-upload-btn" onclick="triggerQuickUpload()" aria-label="Upload receipt screenshot or PDF" title="Upload screenshot or photo">
+        <svg id="vimage-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#e5a922" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="5" width="14" height="14" rx="2.5"></rect>
+          <circle cx="7.5" cy="9.5" r="1.2" fill="#e5a922" stroke="none"></circle>
+          <path d="M4 17l4-4 3 3 2.5-2.5L17 17"></path>
+          <path d="M19 9V3m0 0l-2.5 2.5M19 3l2.5 2.5"></path>
+        </svg>
+      </button>
+    </div>
+
+    <div id="vform-photo-staged" class="vp-staged-wrap" style="display:none;">
+      <div class="vp-cta-row">
+        <div class="vp-thumb-box">
+          <div class="vp-thumb-card">
+            <img id="vimage-thumb-img" alt="Selected receipt preview" style="display:none;" />
+            <span id="vimage-thumb-pdf" class="vp-thumb-pdf" style="display:none;">PDF</span>
+          </div>
+          <button id="vimage-clear-btn" type="button" class="vp-thumb-clear" onclick="clearStagedGalleryFile()" aria-label="Remove selected receipt" title="Remove receipt">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+
+        <button id="vimage-verify-btn" type="button" class="vp-verify-pill-btn" onclick="verifyStagedGalleryFile()">
+          <span>Verify</span>
+        </button>
+      </div>
+      <div id="vimage-staged-note" class="vp-staged-note"></div>
+    </div>
   </div>
 
   <!-- Reference / SMS Panel -->
@@ -1013,7 +1076,7 @@
 
       <div class="sc-top-center">
         <div class="sc-top-title">Verify Payment</div>
-        <div class="sc-top-subtitle">Point camera at receipt</div>
+        <div class="sc-top-subtitle">Take a picture of your receipt</div>
       </div>
 
       <div class="sc-top-right-group">
@@ -1086,16 +1149,19 @@
           <span>Cancel</span>
         </button>
 
-        <button id="scanner-capture-btn" type="button" onclick="captureScannerPhoto(false)" disabled aria-disabled="true" aria-label="Capture receipt photo">
-          <svg id="scanner-auto-ring" viewBox="0 0 92 92" style="display:none;">
-            <circle id="scanner-auto-ring-circle" cx="46" cy="46" r="42"></circle>
-          </svg>
-          <div id="scanner-capture-inner">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M9 3L7.17 5H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2h-3.17L15 3H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+        <div class="sc-dock-center">
+          <button id="scanner-capture-btn" type="button" onclick="captureScannerPhoto(false)" disabled aria-disabled="true" aria-label="Take a picture">
+            <svg id="scanner-auto-ring" viewBox="0 0 92 92" style="display:none;">
+              <circle id="scanner-auto-ring-circle" cx="46" cy="46" r="42"></circle>
             </svg>
-          </div>
-        </button>
+            <div id="scanner-capture-inner">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M9 3L7.17 5H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2h-3.17L15 3H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+              </svg>
+            </div>
+          </button>
+          <span class="sc-shutter-label">Take a picture</span>
+        </div>
 
         <button id="scanner-cam-verify-btn" type="button" class="sc-dock-action" onclick="promptCaptureBeforeVerify()" aria-label="Verify after capture" style="opacity: 0.45;">
           <div class="sc-dock-circle primary">
@@ -1166,7 +1232,8 @@
 
 <div id="toast"></div>
 
-<script src="app.js?v=7"></script>
-<script src="scanner.js?v=8"></script>
+<script src="vendor/jsQR.js?v=1" defer></script>
+<script src="app.js?v=8"></script>
+<script src="scanner.js?v=9"></script>
 </body>
 </html>
