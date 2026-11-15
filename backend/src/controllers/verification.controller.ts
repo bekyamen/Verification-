@@ -1,10 +1,12 @@
 import { Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { AuthenticatedRequest } from '../types';
 import { verifyTextSchema, verifyUrlSchema, verifyManualSchema } from '../validators/verification.validator';
 import { parseRawText } from '../services/receiptParser.service';
 import { processVerification } from '../services/verification.service';
 import { dissectPayload } from '../services/linkDissector';
 import { runImageVerification } from '../services/imageVerify.service';
+import { verifyTelebirrReceiptWithPayProof } from '../services/payproof.service';
 import prisma from '../utils/prisma';
 
 async function resolveBranchAndCashier(req: AuthenticatedRequest): Promise<{ cashierId: string; branchId: string } | null> {
@@ -313,5 +315,269 @@ export const getVerificationHistory = async (req: AuthenticatedRequest, res: Res
     });
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to load verification history', details: error.message });
+  }
+};
+
+/**
+ * Direct PayProof Receipt Verification Endpoint (TELEBIRR ONLY).
+ *
+ * Sequence:
+ * 1. Accepts receipt image (fields: "images[]", "receipt", "file", or "image").
+ * 2. Uploads securely to PayProof (POST /api/v1/verifications/).
+ * 3. Polls status every ~2s until terminal state.
+ * 4. Extracts settled_amount from link_receipt_data / pdf_link_data, compares in integer cents.
+ * 5. Strictly rejects any non-Telebirr bank receipt.
+ * 6. Returns clean standardized JSON response.
+ */
+export const verifyReceiptPayProof = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const wantsStream =
+    req.query.stream === '1' ||
+    String(req.headers.accept || '').includes('application/x-ndjson');
+
+  const sendStreamEvent = (payload: Record<string, unknown>) => {
+    if (!res.writableEnded) {
+      res.write(JSON.stringify(payload) + '\n');
+    }
+  };
+
+  try {
+    if (!req.file) {
+      res.status(400).json({
+        success: false,
+        verified: false,
+        error: 'No receipt image file uploaded. Please upload a receipt image using field "images[]", "receipt", or "file".',
+      });
+      return;
+    }
+
+    let expectedAmount: number | undefined = undefined;
+    if (req.body.expectedAmount) {
+      expectedAmount = parseFloat(req.body.expectedAmount);
+    } else if (req.query.expectedAmount) {
+      expectedAmount = parseFloat(String(req.query.expectedAmount));
+    }
+
+    // Explicit provider check if provided: TELEBIRR ONLY
+    const requestedProvider = req.body.provider || req.query.provider;
+    if (requestedProvider && !String(requestedProvider).toUpperCase().includes('TELEBIRR')) {
+      res.status(422).json({
+        success: false,
+        verified: false,
+        status: 'INVALID_RECEIPT',
+        code: 'UNSUPPORTED_BANK',
+        provider: 'TELEBIRR',
+        message: `Only Telebirr receipt verification is supported by this endpoint. Bank/provider "${requestedProvider}" is not supported here.`,
+      });
+      return;
+    }
+
+    if (wantsStream) {
+      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.status(200);
+      if (typeof (res as any).flushHeaders === 'function') {
+        (res as any).flushHeaders();
+      }
+    }
+
+    // Optional context resolution
+    let context = await resolveBranchAndCashier(req).catch(() => null);
+    let registeredAccounts: Array<{ accountNumber: string; accountHolderName: string }> = [];
+
+    if (context?.branchId) {
+      try {
+        const branch = await prisma.branch.findUnique({
+          where: { id: context.branchId },
+          include: {
+            organization: {
+              include: {
+                bankSettlementAccounts: {
+                  where: { isActive: true, bankName: 'TELEBIRR' },
+                },
+              },
+            },
+          },
+        });
+        registeredAccounts = branch?.organization?.bankSettlementAccounts ?? [];
+      } catch (e) {
+        // Continue even if DB account fetch has transient error
+      }
+    } else {
+      // Unauthenticated request (curl test or public verify endpoint):
+      // Look up default branch & registered Telebirr accounts from DB
+      try {
+        const defaultBranch = await prisma.branch.findFirst({
+          include: {
+            organization: {
+              include: {
+                bankSettlementAccounts: {
+                  where: { isActive: true, bankName: 'TELEBIRR' },
+                },
+              },
+            },
+            users: {
+              take: 1,
+            },
+          },
+        });
+        if (defaultBranch) {
+          context = {
+            branchId: defaultBranch.id,
+            cashierId: defaultBranch.users[0]?.id || 'SYSTEM_API',
+          };
+          registeredAccounts = defaultBranch.organization?.bankSettlementAccounts ?? [];
+        } else {
+          registeredAccounts = await prisma.bankSettlementAccount.findMany({
+            where: { isActive: true, bankName: 'TELEBIRR' },
+            select: { accountNumber: true, accountHolderName: true },
+          });
+        }
+      } catch (e) {
+        // Continue if DB unavailable
+      }
+    }
+
+    const outcome = await verifyTelebirrReceiptWithPayProof(
+      req.file.buffer,
+      req.file.originalname || 'receipt.jpg',
+      req.file.mimetype || 'image/jpeg',
+      {
+        expectedAmount,
+        registeredAccounts,
+        onProgress: wantsStream ? (stage) => sendStreamEvent({ stage }) : undefined,
+      }
+    );
+
+    // If verified and branch context exists, persist to database
+    let savedRecord: any = null;
+    if (context && outcome.status === 'VERIFIED' && outcome.reference) {
+      try {
+        const now = new Date();
+        const verifiedTime = outcome.transactionDate && !isNaN(outcome.transactionDate.getTime())
+          ? outcome.transactionDate
+          : now;
+
+        savedRecord = await prisma.$transaction(async (tx) => {
+          const prior = await tx.verificationRecord.findUnique({
+            where: {
+              branchId_provider_txnReference: {
+                branchId: context.branchId,
+                provider: 'TELEBIRR',
+                txnReference: outcome.reference,
+              },
+            },
+          });
+
+          const isAlreadyVerified = prior?.status === 'VERIFIED';
+
+          const record = await tx.verificationRecord.upsert({
+            where: {
+              branchId_provider_txnReference: {
+                branchId: context.branchId,
+                provider: 'TELEBIRR',
+                txnReference: outcome.reference,
+              },
+            },
+            update: {
+              amount: new Prisma.Decimal(outcome.settledAmount),
+              expectedAmount: expectedAmount ? new Prisma.Decimal(expectedAmount) : null,
+              receivingAccount: outcome.receiverAccount || null,
+              payerPhone: outcome.senderPhone || null,
+              payerName: outcome.senderName || null,
+              receiptImageUrl: 'PAYPROOF_VERIFIED_RECEIPT',
+              status: 'VERIFIED',
+              verifiedAt: verifiedTime,
+            },
+            create: {
+              branchId: context.branchId,
+              cashierId: context.cashierId,
+              provider: 'TELEBIRR',
+              txnReference: outcome.reference,
+              amount: new Prisma.Decimal(outcome.settledAmount),
+              expectedAmount: expectedAmount ? new Prisma.Decimal(expectedAmount) : null,
+              receivingAccount: outcome.receiverAccount || null,
+              payerPhone: outcome.senderPhone || null,
+              payerName: outcome.senderName || null,
+              receiptImageUrl: 'PAYPROOF_VERIFIED_RECEIPT',
+              status: 'VERIFIED',
+              verifiedAt: verifiedTime,
+            },
+          });
+
+          if (!isAlreadyVerified) {
+            const today = new Date(new Date().setHours(0, 0, 0, 0));
+            await tx.dailyReport.upsert({
+              where: { branchId_reportDate: { branchId: context.branchId, reportDate: today } },
+              create: {
+                branchId: context.branchId,
+                reportDate: today,
+                totalRevenue: outcome.settledAmount,
+                telebirrTotal: outcome.settledAmount,
+                cbeTotal: 0,
+                cashTotal: 0,
+                totalTransactions: 1,
+                duplicatesBlocked: 0,
+              },
+              update: {
+                totalRevenue: { increment: outcome.settledAmount },
+                telebirrTotal: { increment: outcome.settledAmount },
+                totalTransactions: { increment: 1 },
+              },
+            });
+          }
+
+          return record;
+        });
+      } catch (dbErr: any) {
+        console.warn('[PayProof] Warning: Could not persist verification record to DB:', dbErr.message);
+      }
+    }
+
+    let httpStatus = 200;
+    if (outcome.status === 'VERIFIED') {
+      httpStatus = 200;
+    } else if (outcome.status === 'AMOUNT_MISMATCH') {
+      httpStatus = 400;
+    } else if (outcome.status === 'INVALID_RECEIPT' || outcome.status === 'WRONG_RECEIVER') {
+      httpStatus = 422;
+    } else if (outcome.status === 'FAILED_UPSTREAM') {
+      httpStatus = 502;
+    } else {
+      httpStatus = 400;
+    }
+
+    const responsePayload = {
+      ...outcome,
+      ...(savedRecord ? { recordId: savedRecord.id } : {}),
+    };
+
+    if (wantsStream) {
+      sendStreamEvent({ done: true, httpStatus, result: responsePayload });
+      res.end();
+    } else {
+      res.status(httpStatus).json(responsePayload);
+    }
+  } catch (error: any) {
+    if (wantsStream && res.headersSent) {
+      sendStreamEvent({
+        done: true,
+        httpStatus: 500,
+        result: {
+          success: false,
+          verified: false,
+          status: 'INVALID_RECEIPT',
+          message: error.message || 'PayProof Telebirr verification failed.',
+        },
+      });
+      res.end();
+    } else {
+      res.status(500).json({
+        success: false,
+        verified: false,
+        error: 'Verification processing failed',
+        details: error.message,
+      });
+    }
   }
 };

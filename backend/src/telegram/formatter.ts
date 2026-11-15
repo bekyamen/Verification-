@@ -6,33 +6,156 @@
  */
 
 /** Escape all Telegram MarkdownV2 reserved characters in a plain string. */
-function esc(text: string | null | undefined): string {
+export function esc(text: string | null | undefined): string {
   if (!text) return '';
   return String(text).replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
 }
 
+/** Format a number as clean ETB currency amount, e.g. "10" or "10.50" */
+export function fmtCleanAmount(val: any): string {
+  const n = Number(val);
+  if (isNaN(n) || val === null || val === undefined) return '0';
+  if (n % 1 === 0) {
+    return n.toLocaleString('en-US');
+  }
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 /** Format a number as "ETB 1,500.00" */
-function fmtAmount(val: any): string {
+export function fmtAmount(val: any): string {
   const n = Number(val);
   if (isNaN(n) || val === null || val === undefined) return 'N/A';
   return `ETB ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-/** Format a date with EAT timezone */
-function fmtDate(val: any): string {
-  if (!val) return '';
+/** Format Gregorian date as "13 Oct 2026, 11:13 PM" (Africa/Addis_Ababa timezone) */
+export function formatGregorian(d: Date): string {
   try {
-    return new Date(val).toLocaleString('en-ET', {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Africa/Addis_Ababa',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    }).formatToParts(d);
+
+    const m: Record<string, string> = {};
+    for (const p of parts) m[p.type] = p.value;
+    const dayPeriod = m.dayPeriod ? m.dayPeriod.toUpperCase() : '';
+    return `${m.day} ${m.month} ${m.year}, ${m.hour}:${m.minute} ${dayPeriod}`.trim();
+  } catch {
+    return d.toISOString();
+  }
+}
+
+/**
+ * Format Ethiopian Calendar date and 12-hour traditional cycle time.
+ * e.g. "ጥቅምት 3, 2019, 5:13 ከምሽት"
+ */
+export function formatEthiopian(d: Date): string {
+  try {
+    const ethMonths = [
+      'መስከረም', 'ጥቅምት', 'ኅዳር', 'ታኅሣሥ', 'ጥር', 'የካቲት',
+      'መጋቢት', 'ሚያዝያ', 'ግንቦት', 'ሰኔ', 'ሐምሌ', 'ነሐሴ', 'ጳጉሜ',
+    ];
+
+    const parts = new Intl.DateTimeFormat('en-US-u-ca-ethiopic', {
       timeZone: 'Africa/Addis_Ababa',
       year: 'numeric',
-      month: 'short',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    }).formatToParts(d);
+
+    const m: Record<string, string> = {};
+    for (const p of parts) m[p.type] = p.value;
+
+    const ethYear = m.year;
+    const monthIdx = parseInt(m.month, 10) - 1;
+    const ethMonthName = ethMonths[monthIdx] || m.month;
+    const ethDay = m.day;
+
+    const addisHour = parseInt(m.hour, 10) % 24;
+    const minute = String(m.minute).padStart(2, '0');
+
+    // Ethiopian 12-hour cycle (day starts at 6:00 AM)
+    let ethHour = (addisHour - 6) % 12;
+    if (ethHour <= 0) ethHour += 12;
+
+    let period = '';
+    if (addisHour >= 6 && addisHour < 12) {
+      period = 'ከጠዋቱ';
+    } else if (addisHour >= 12 && addisHour < 18) {
+      period = 'ከሰዓት';
+    } else if (addisHour >= 18 && addisHour < 24) {
+      period = 'ከምሽት';
+    } else {
+      period = 'ከሌሊቱ';
+    }
+
+    return `${ethMonthName} ${ethDay}, ${ethYear}, ${ethHour}:${minute} ${period}`;
   } catch {
-    return String(val);
+    return '';
   }
+}
+
+/**
+ * Format relative elapsed time from verification.
+ * e.g. "26d 13h from verification", "2h 15m from verification", "5m from verification"
+ */
+export function formatRelativeTime(targetDate: Date, baseDate: Date = new Date()): string {
+  try {
+    const diffMs = Math.max(0, baseDate.getTime() - targetDate.getTime());
+    const diffMinutes = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMinutes / 60);
+    const days = Math.floor(diffHours / 24);
+    const hours = diffHours % 24;
+    const minutes = diffMinutes % 60;
+
+    if (days > 0) {
+      return `${days}d ${hours}h from verification`;
+    }
+    if (hours > 0) {
+      return `${hours}h ${minutes}m from verification`;
+    }
+    if (minutes > 0) {
+      return `${minutes}m from verification`;
+    }
+    return '0m from verification';
+  } catch {
+    return '';
+  }
+}
+
+/** Extract credited party / recipient or payer name from result */
+export function extractPartyName(result: any): string {
+  if (result.receiverName && typeof result.receiverName === 'string' && result.receiverName.trim()) {
+    return result.receiverName.trim();
+  }
+  const raw = result.raw;
+  if (raw) {
+    if (typeof raw.to_name === 'string' && raw.to_name.trim()) return raw.to_name.trim();
+    if (raw.pdf_link_data?.to_name && typeof raw.pdf_link_data.to_name === 'string' && raw.pdf_link_data.to_name.trim()) {
+      return raw.pdf_link_data.to_name.trim();
+    }
+    if (raw.link_receipt_data?.credited_party_name && typeof raw.link_receipt_data.credited_party_name === 'string') {
+      return raw.link_receipt_data.credited_party_name.trim();
+    }
+  }
+  if (result.receivingAccount && typeof result.receivingAccount === 'string' && result.receivingAccount.trim()) {
+    return result.receivingAccount.trim();
+  }
+  if (result.payerName && typeof result.payerName === 'string' && result.payerName.trim()) {
+    return result.payerName.trim();
+  }
+  if (result.payerPhone && typeof result.payerPhone === 'string' && result.payerPhone.trim()) {
+    return result.payerPhone.trim();
+  }
+  return 'N/A';
 }
 
 export interface FormatOptions {
@@ -47,27 +170,41 @@ export function formatVerificationResult({ httpStatus, result }: FormatOptions):
 
   const status        = result.status as string | undefined;
   const provider      = String(result.provider ?? '?');
-  const ref           = String(result.txnReference ?? result.id ?? '?');
+  const ref           = String(result.txnReference ?? result.id ?? result.reference ?? '?');
   const amount        = fmtAmount(result.amount);
   const expected      = result.expectedAmount != null ? fmtAmount(result.expectedAmount) : null;
   const payer         = esc(result.payerName || result.payerPhone || null) || 'N/A';
   const receiver      = esc(result.receivingAccount || null) || 'N/A';
-  const verifiedAt    = fmtDate(result.verifiedAt);
   const message       = esc(result.message || null);
 
   switch (status) {
-    case 'VERIFIED':
+    case 'VERIFIED': {
+      const cleanAmt = fmtCleanAmount(result.settledAmount ?? result.amount);
+      const party = extractPartyName(result);
+
+      const rawTxDate = result.transactionDate || result.verifiedAt || result.createdAt;
+      const txDate = rawTxDate ? new Date(rawTxDate) : new Date();
+      const validTxDate = isNaN(txDate.getTime()) ? new Date() : txDate;
+
+      const rawVerifyDate = result.verifiedAt || result.createdAt;
+      const verifyDate = rawVerifyDate ? new Date(rawVerifyDate) : new Date();
+      const validVerifyDate = isNaN(verifyDate.getTime()) ? new Date() : verifyDate;
+
+      const gregStr = formatGregorian(validTxDate);
+      const ethStr = formatEthiopian(validTxDate);
+      const relStr = formatRelativeTime(validTxDate, validVerifyDate);
+
       return (
-        `✅ *VERIFIED*\n\n` +
-        `🏦 Provider: \`${provider}\`\n` +
-        `🔖 Reference: \`${ref}\`\n` +
-        `💰 Amount: *${esc(amount)}*\n` +
-        (expected ? `💵 Expected: ${esc(expected)}\n` : '') +
-        `👤 Payer: ${payer}\n` +
-        `🏧 To Account: ${receiver}\n` +
-        (verifiedAt ? `🕐 Verified: ${esc(verifiedAt)}\n` : '') +
-        `\n_Recorded by CheckFlow ET ✔_`
+        `✅ *Verified / ተረጋግጧል*\n\n` +
+        `🏦 \`${esc(provider)}\`\n` +
+        `💰 *ETB ${cleanAmt}*\n` +
+        `🔖 \`${esc(ref)}\`\n` +
+        `👥 *${esc(party)}*\n` +
+        `📅 ${esc(gregStr)}\n` +
+        (ethStr ? `   \\(${esc(ethStr)}\\)\n` : '') +
+        (relStr ? `   ${esc(relStr)}` : '')
       );
+    }
 
     case 'FLAGGED_DUPLICATE':
       return (
@@ -76,7 +213,7 @@ export function formatVerificationResult({ httpStatus, result }: FormatOptions):
         `🏦 Provider: \`${provider}\`\n` +
         `🔖 Reference: \`${ref}\`\n` +
         `💰 Amount: *${esc(amount)}*\n` +
-        (verifiedAt ? `🕐 First verified: ${esc(verifiedAt)}\n` : '') +
+        (result.verifiedAt ? `🕐 First verified: ${esc(formatGregorian(new Date(result.verifiedAt)))}\n` : '') +
         `\n_⚠ Duplicate blocked by CheckFlow ET_`
       );
 
@@ -148,7 +285,7 @@ export function formatVerificationResult({ httpStatus, result }: FormatOptions):
 /** One-liner status summary for logging / inline notifications */
 export function formatStatusLine(result: any): string {
   const status = result?.status ?? 'UNKNOWN';
-  const ref    = result?.txnReference ?? '?';
+  const ref    = result?.txnReference ?? result?.reference ?? '?';
   const amt    = result?.amount != null ? ` ${fmtAmount(result.amount)}` : '';
   return `[${status}] ${ref}${amt}`;
 }

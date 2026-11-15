@@ -1,9 +1,11 @@
 import { Router, Response } from 'express';
+import jwt from 'jsonwebtoken';
 import {
   verifyTextPayload,
   verifyImagePayload,
   verifyUrlPayload,
   verifyManualPayload,
+  verifyReceiptPayProof,
   getVerificationHistory,
 } from '../controllers/verification.controller';
 import { requireAuth, requireAdmin } from '../middleware/auth.middleware';
@@ -20,26 +22,65 @@ import {
 import { runStatusProviderProbe, getStatusCapabilities } from '../services/statusProbeService';
 
 const router = Router();
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
+
+// Optional auth: attaches req.user if Bearer token present, but does not block unauthenticated requests
+const optionalAuth = (req: any, _res: any, next: any) => {
+  const authHeader = req.headers.authorization;
+  let token: string | undefined;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
+  } else if (req.cookies && req.cookies.token) {
+    token = req.cookies.token;
+  }
+  if (token) {
+    try {
+      const payload = jwt.verify(token, JWT_SECRET);
+      req.user = payload;
+    } catch {
+      // Ignore invalid or expired token for optional auth routes
+    }
+  }
+  next();
+};
 
 // Health Check
 router.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
-// Flexible upload middleware accepting either 'receipt' or 'file' field name
+// Flexible upload middleware accepting receipt, file, image, images[], or any file field
 const uploadReceiptOrFile = (req: any, res: any, next: any) => {
-  upload.fields([
-    { name: 'receipt', maxCount: 1 },
-    { name: 'file', maxCount: 1 },
-  ])(req, res, (err: any) => {
-    if (err) return next(err);
-    if (req.files) {
-      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
-      req.file = files['receipt']?.[0] || files['file']?.[0];
+  upload.any()(req, res, (err: any) => {
+    if (err) {
+      if (err.message && err.message.includes('Unexpected end of form')) {
+        res.status(400).json({
+          success: false,
+          verified: false,
+          error: 'Upload stream interrupted: Unexpected end of form.',
+          hint: 'In Postman: Go to the "Headers" tab and UNCHECK "Content-Type" so Postman automatically generates the boundary. Under the "Body" tab, select "form-data", set key to "receipt" or "images[]", hover over the key to switch type from "Text" to "File", and select your receipt image.',
+        });
+        return;
+      }
+      return next(err);
+    }
+    if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+      // Find by preferred field names or take the first file
+      req.file =
+        req.files.find((f: any) => f.fieldname === 'images[]') ||
+        req.files.find((f: any) => f.fieldname === 'receipt') ||
+        req.files.find((f: any) => f.fieldname === 'file') ||
+        req.files.find((f: any) => f.fieldname === 'image') ||
+        req.files[0];
     }
     next();
   });
 };
+
+// ── PayProof Telebirr-Only Verification Endpoints ────────────────────────────
+// Accepts receipt image ("images[]", "receipt", "file"), forwards to PayProof, polls & validates
+router.post('/verify-receipt', optionalAuth, uploadReceiptOrFile, verifyReceiptPayProof);
+router.post('/verify/telebirr', optionalAuth, uploadReceiptOrFile, verifyReceiptPayProof);
 
 // ── Verification Endpoints (Accessible by both Cashier and Admin) ─────────────
 router.get('/verify/history', requireAuth, getVerificationHistory);
