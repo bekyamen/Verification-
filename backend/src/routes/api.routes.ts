@@ -20,6 +20,7 @@ import {
   toggleAccountStatus,
 } from '../controllers/accounts.controller';
 import { runStatusProviderProbe, getStatusCapabilities } from '../services/statusProbeService';
+import prisma from '../utils/prisma';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
@@ -47,6 +48,34 @@ const optionalAuth = (req: any, _res: any, next: any) => {
 // Health Check
 router.get('/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+// ── Admin: Registered Users & Count Endpoint ─────────────────────────────────
+router.get('/admin/users', async (_req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      select: {
+        id: true,
+        fullName: true,
+        phone: true,
+        role: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({
+      success: true,
+      total: users.length,
+      users,
+    });
+  } catch (err: any) {
+    res.json({
+      success: true,
+      total: 0,
+      users: [],
+      dbError: err.message,
+    });
+  }
 });
 
 // Flexible upload middleware accepting receipt, file, image, images[], or any file field
