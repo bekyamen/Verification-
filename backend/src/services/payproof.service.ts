@@ -21,7 +21,15 @@
 
 import axios, { AxiosResponse } from 'axios';
 import FormData from 'form-data';
+import https from 'https';
 import logger from '../utils/logger';
+
+// Persistent keep-alive agent to avoid repeated TCP/TLS handshake latency on every poll
+const payproofAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 25,
+  keepAliveMsecs: 60_000,
+});
 
 export interface PayProofLinkReceiptData {
   settled_amount?: number;
@@ -111,7 +119,7 @@ export interface VerifyPayProofOptions {
 
 const DEFAULT_BASE_URL = 'https://verifyitet.duckdns.org';
 const DEFAULT_TIMEOUT_MS = 75000; // 75 seconds safety timeout
-const DEFAULT_POLL_INTERVAL_MS = 2000; // 2 seconds
+const DEFAULT_POLL_INTERVAL_MS = 1000; // 1 second for fast turnaround
 
 function getBaseUrl(): string {
   const url = process.env.PAYPROOF_BASE_URL?.trim() || DEFAULT_BASE_URL;
@@ -208,6 +216,7 @@ export async function uploadReceiptToPayProof(
       Accept: 'application/json',
     },
     timeout: 30000,
+    httpsAgent: payproofAgent,
   });
 
   const requestId = (response.headers['x-request-id'] || response.headers['x-correlation-id']) as string | undefined;
@@ -256,6 +265,7 @@ export async function pollPayProofVerification(
           Accept: 'application/json',
         },
         timeout: 15000,
+        httpsAgent: payproofAgent,
       });
 
       lastRequestId = (response.headers['x-request-id'] || response.headers['x-correlation-id']) as string | undefined;

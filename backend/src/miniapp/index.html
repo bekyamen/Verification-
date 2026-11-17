@@ -10,11 +10,11 @@
   <style>
     /* ── Telegram theme tokens & glassmorphism ───────────────────────────── */
     :root {
-      --bg: var(--tg-theme-bg-color, #121214);
-      --bg2: var(--tg-theme-secondary-bg-color, #1c1c1e);
+      --bg: #050b18;
+      --bg2: rgba(10, 18, 36, 0.78);
       --text: var(--tg-theme-text-color, #ffffff);
-      --hint: var(--tg-theme-hint-color, #8e8e93);
-      --link: var(--tg-theme-link-color, #0a84ff);
+      --hint: var(--tg-theme-hint-color, #8fa0b5);
+      --link: var(--tg-theme-link-color, #38bdf8);
       --button: var(--tg-theme-button-color, #0a84ff);
       --btn-text: var(--tg-theme-button-text-color, #ffffff);
       --accent: #ff9f0a;
@@ -30,7 +30,11 @@
 
     body {
       font-family: -apple-system, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
-      background: var(--bg);
+      background: radial-gradient(circle at 15% 0%, rgba(14, 55, 138, 0.4) 0%, transparent 45%), radial-gradient(circle at 85% 15%, rgba(2, 132, 199, 0.3) 0%, transparent 45%), #050b18;
+      background-attachment: fixed;
+      background-repeat: no-repeat;
+      background-size: cover;
+      background-color: #050b18;
       color: var(--text);
       min-height: 100vh;
       overscroll-behavior: none;
@@ -42,6 +46,11 @@
       display: none;
       flex-direction: column;
       min-height: 100vh;
+      background: radial-gradient(circle at 15% 0%, rgba(14, 55, 138, 0.4) 0%, transparent 45%), radial-gradient(circle at 85% 15%, rgba(2, 132, 199, 0.3) 0%, transparent 45%), #050b18;
+      background-attachment: fixed;
+      background-repeat: no-repeat;
+      background-size: cover;
+      background-color: #050b18;
       padding: 0 0 90px;
       animation: fadeIn .2s ease;
     }
@@ -209,19 +218,25 @@
     /* ── Bottom Nav ─────────────────────────────────────────────────────── */
     .bottom-nav {
       position: fixed; bottom: 0; left: 0; right: 0;
-      height: calc(60px + env(safe-area-inset-bottom, 0px));
-      background: rgba(28, 28, 30, 0.92);
+      height: calc(64px + env(safe-area-inset-bottom, 0px));
+      background: rgba(4, 8, 22, 0.96);
       backdrop-filter: blur(20px) saturate(180%);
-      border-top: 1px solid var(--glass-border);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
       display: none; align-items: stretch; z-index: 50;
     }
     .bottom-nav.visible { display: flex; }
     .nav-item {
       flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
       gap: 3px; cursor: pointer; padding-bottom: env(safe-area-inset-bottom, 0px);
-      border: none; background: transparent; color: var(--hint); font-size: 11px; font-weight: 500;
+      border: none; background: transparent; color: #64748b; font-size: 11px; font-weight: 500;
+      position: relative; transition: color 0.15s ease;
     }
-    .nav-item.active { color: var(--button); font-weight: 700; }
+    .nav-item.active { color: #38bdf8; font-weight: 700; }
+    .nav-item.active::after {
+      content: ''; position: absolute; bottom: 4px; width: 24px; height: 2.5px;
+      background: #38bdf8; border-radius: 2px; box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
+    }
     .nav-icon { font-size: 20px; line-height: 1; }
 
     /* ── Modals & sheets ────────────────────────────────────────────────── */
@@ -269,7 +284,11 @@
 
     /* ── Verify Dashboard Page (matches clean dark fintech layout) ──────── */
     #screen-verify {
-      background: #131922;
+      background: radial-gradient(circle at 15% 0%, rgba(14, 55, 138, 0.4) 0%, transparent 45%), radial-gradient(circle at 85% 15%, rgba(2, 132, 199, 0.3) 0%, transparent 45%), #050b18;
+      background-attachment: fixed;
+      background-repeat: no-repeat;
+      background-size: cover;
+      background-color: #050b18;
       padding: calc(10px + env(safe-area-inset-top, 0px)) 16px calc(92px + env(safe-area-inset-bottom, 0px));
     }
     .vp-topbar {
@@ -589,74 +608,194 @@
 </div>
 
 <!-- ── Screen: Admin Home Dashboard ────────────────────────────────── -->
-<div id="screen-home" class="screen">
-  <div class="header">
-    <div class="header-logo">⚡</div>
-    <div class="header-title-box">
-      <h1 id="home-org-name">Business Dashboard</h1>
-      <p id="home-greeting">Welcome back</p>
+<div id="screen-home" class="screen" style="background: radial-gradient(circle at 15% 0%, rgba(14, 55, 138, 0.4) 0%, transparent 45%), radial-gradient(circle at 85% 15%, rgba(2, 132, 199, 0.3) 0%, transparent 45%), #050b18; min-height: 100vh; padding: 16px 16px 100px;">
+  <!-- Header -->
+  <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
+    <div>
+      <p id="home-greeting-time" style="font-size: 11px; font-weight: 700; letter-spacing: 0.8px; color: #7b93b2; text-transform: uppercase; margin-bottom: 3px;">
+        GOOD EVENING,
+      </p>
+      <h1 id="home-greeting-name" style="font-size: 26px; font-weight: 800; color: #ffffff; margin: 0; letter-spacing: -0.3px; display: flex; align-items: center; gap: 6px;">
+        Bereket <span style="font-size: 24px;">👋</span>
+      </h1>
+      <p style="font-size: 13.5px; color: #8fa2bd; margin: 6px 0 0; line-height: 1.35;">
+        Verify payments, build trust,<br>
+        keep your business moving.
+      </p>
     </div>
-    <span class="badge active" id="home-role-badge">ADMIN</span>
+
+    <!-- Business Dashboard Pill Badge -->
+    <div style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 9999px; background: rgba(14, 165, 233, 0.12); border: 1px solid rgba(56, 189, 248, 0.28); color: #38bdf8; font-size: 11.5px; font-weight: 600; white-space: nowrap; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 21h18M3 10h18M5 10v11M9 10v11M15 10v11M19 10v11M12 2 2 7h20L12 2z" />
+      </svg>
+      <span id="home-org-name">Business Dashboard</span>
+    </div>
   </div>
 
-  <div style="padding: 16px 12px 4px;">
-    <!-- Stats card -->
-    <div class="card" style="background: linear-gradient(135deg, rgba(10, 132, 255, 0.15) 0%, rgba(94, 92, 230, 0.15) 100%); padding: 18px 14px; margin: 0 0 16px;">
-      <div style="display: flex; justify-content: space-around; text-align: center;">
-        <div style="cursor: pointer;" onclick="navTo('accounts')">
-          <div id="home-stat-accounts" style="font-size: 24px; font-weight: 800; color: #0a84ff;">0</div>
-          <div style="font-size: 12px; color: var(--hint); margin-top: 2px;">Receiving Accounts</div>
-        </div>
-        <div style="width: 1px; background: var(--glass-border);"></div>
-        <div style="cursor: pointer;" onclick="navTo('cashiers')">
-          <div id="home-stat-cashiers" style="font-size: 24px; font-weight: 800; color: #30d158;">0</div>
-          <div style="font-size: 12px; color: var(--hint); margin-top: 2px;">Active Cashiers</div>
+  <!-- Quick Stats Top Card -->
+  <div style="background: linear-gradient(135deg, rgba(14, 45, 114, 0.6) 0%, rgba(8, 23, 64, 0.8) 100%); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 20px; padding: 16px 18px; margin-bottom: 16px; backdrop-filter: blur(12px); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+    <!-- Total Accounts -->
+    <div onclick="navTo('accounts')" style="display: flex; align-items: center; gap: 12px; cursor: pointer; user-select: none;">
+      <div style="width: 44px; height: 44px; border-radius: 14px; background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(2, 132, 199, 0.35); flex-shrink: 0;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <rect width="20" height="14" x="2" y="5" rx="3" />
+          <line x1="2" x2="22" y1="10" y2="10" />
+        </svg>
+      </div>
+      <div>
+        <span style="font-size: 11.5px; color: #94a3b8; font-weight: 500; display: block;">Total Accounts</span>
+        <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+          <span id="home-stat-accounts" style="font-size: 20px; font-weight: 800; color: #ffffff;">2</span>
+          <span style="color: #94a3b8; font-size: 16px; font-weight: 600;">›</span>
         </div>
       </div>
     </div>
 
-    <!-- 4 Main Action Buttons -->
-    <p class="section-label" style="padding-left: 4px;">Main Menu</p>
+    <!-- Active Cashiers -->
+    <div onclick="navTo('cashiers')" style="display: flex; align-items: center; gap: 12px; cursor: pointer; user-select: none;">
+      <div style="width: 44px; height: 44px; border-radius: 14px; background: linear-gradient(135deg, #0d9488 0%, #059669 100%); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(5, 150, 105, 0.35); flex-shrink: 0;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <rect width="18" height="18" x="3" y="3" rx="2" />
+          <circle cx="12" cy="10" r="3" />
+          <path d="M7 21v-2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2" />
+        </svg>
+      </div>
+      <div>
+        <span style="font-size: 11.5px; color: #94a3b8; font-weight: 500; display: block;">Active Cashiers</span>
+        <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+          <span id="home-stat-cashiers" style="font-size: 20px; font-weight: 800; color: #ffffff;">1</span>
+          <span style="color: #94a3b8; font-size: 16px; font-weight: 600;">›</span>
+        </div>
+      </div>
+    </div>
+  </div>
 
+  <!-- Two Highlight Action Cards (2-column Grid) -->
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px;">
+    <!-- Card 1: Verify Payment (Vibrant Green) -->
+    <div onclick="navTo('verify')" style="background: linear-gradient(145deg, #057a55 0%, #046c4e 50%, #03543f 100%); border: 1px solid rgba(52, 211, 153, 0.32); border-radius: 20px; padding: 16px; display: flex; flex-direction: column; justify-content: space-between; min-height: 148px; cursor: pointer; box-shadow: 0 10px 25px -5px rgba(5, 122, 85, 0.45); user-select: none;">
+      <div style="width: 38px; height: 38px; border-radius: 50%; background: rgba(255, 255, 255, 0.2); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; color: #ffffff;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+        </svg>
+      </div>
+      <div>
+        <h3 style="font-size: 16px; font-weight: 800; color: #ffffff; margin: 12px 0 0; line-height: 1.2;">Verify Payment</h3>
+        <p style="font-size: 11.5px; color: rgba(255, 255, 255, 0.82); margin: 4px 0 0; line-height: 1.35;">Check CBE or Telebirr customer payment receipts</p>
+      </div>
+      <div style="width: 30px; height: 30px; border-radius: 50%; background: rgba(255, 255, 255, 0.18); display: flex; align-items: center; justify-content: center; color: #ffffff; align-self: flex-end; margin-top: 8px;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12h14M12 5l7 7-7 7" />
+        </svg>
+      </div>
+    </div>
+
+    <!-- Card 2: Quick Scan (Royal Sapphire Blue) -->
+    <div onclick="navTo('verify')" style="background: linear-gradient(145deg, #1d4ed8 0%, #1e40af 50%, #172554 100%); border: 1px solid rgba(96, 165, 250, 0.32); border-radius: 20px; padding: 16px; display: flex; flex-direction: column; justify-content: space-between; min-height: 148px; cursor: pointer; box-shadow: 0 10px 25px -5px rgba(29, 78, 216, 0.45); user-select: none;">
+      <div style="width: 38px; height: 38px; border-radius: 50%; background: rgba(255, 255, 255, 0.2); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; color: #ffffff;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+          <rect x="7" y="7" width="10" height="10" rx="1.5" />
+        </svg>
+      </div>
+      <div>
+        <h3 style="font-size: 16px; font-weight: 800; color: #ffffff; margin: 12px 0 0; line-height: 1.2;">Quick Scan</h3>
+        <p style="font-size: 11.5px; color: rgba(255, 255, 255, 0.82); margin: 4px 0 0; line-height: 1.35;">Scan & verify receipt instantly</p>
+      </div>
+      <div style="width: 30px; height: 30px; border-radius: 50%; background: rgba(255, 255, 255, 0.18); display: flex; align-items: center; justify-content: center; color: #ffffff; align-self: flex-end; margin-top: 8px;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12h14M12 5l7 7-7 7" />
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Menu Section -->
+  <div style="margin-bottom: 16px;">
+    <!-- Section Title Bar -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="width: 3.5px; height: 18px; border-radius: 3px; background: #00d2ff; display: inline-block;"></span>
+        <h2 style="font-size: 17px; font-weight: 800; color: #ffffff; margin: 0;">Main Menu</h2>
+      </div>
+      <button type="button" onclick="navTo('verify')" style="background: none; border: none; color: #38bdf8; fontSize: 12.5px; font-weight: 600; cursor: pointer; padding: 4px; display: flex; align-items: center; gap: 4px;">
+        All Features →
+      </button>
+    </div>
+
+    <!-- 4 Stacked Menu Cards -->
     <div style="display: flex; flex-direction: column; gap: 10px;">
-      <!-- Verify Payment -->
-      <div class="card" onclick="navTo('verify')" style="margin: 0; padding: 18px; display: flex; align-items: center; gap: 14px; cursor: pointer; border-color: rgba(255, 214, 10, 0.3); background: rgba(255, 214, 10, 0.05);">
-        <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(255, 214, 10, 0.2); display: flex; align-items: center; justify-content: center; font-size: 22px;">⚡</div>
-        <div style="flex: 1;">
-          <strong style="font-size: 16px; display: block; color: #ffd60a;">Verify Payment</strong>
-          <span style="font-size: 13px; color: var(--hint);">Check CBE / Telebirr receipts against fraud</span>
+      <!-- 1. Verify Payment -->
+      <div onclick="navTo('verify')" style="background: rgba(10, 18, 36, 0.78); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); border-left: 3.5px solid #eab308; border-radius: 18px; padding: 14px 16px; display: flex; align-items: center; gap: 14px; cursor: pointer; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25); user-select: none;">
+        <div style="width: 48px; height: 48px; border-radius: 14px; background: linear-gradient(135deg, #eab308 0%, #ca8a04 100%); display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 4px 12px rgba(234, 179, 8, 0.3);">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="#ffffff">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+          </svg>
         </div>
-        <div style="font-size: 18px; color: var(--hint);">→</div>
+        <div style="flex: 1; min-width: 0;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <strong style="font-size: 15.5px; font-weight: 700; color: #ffffff; display: block;">Verify Payment</strong>
+            <div style="display: inline-flex; align-items: center; gap: 4px;">
+              <img src="images/cbe-logo.png" style="width: 14px; height: 14px; object-fit: contain;" alt="CBE" />
+              <img src="images/telebirr-logo.png" style="width: 14px; height: 14px; object-fit: contain;" alt="Telebirr" />
+            </div>
+          </div>
+          <p style="font-size: 12px; color: #8fa2bd; margin: 3px 0 0; line-height: 1.3;">Check CBE or Telebirr customer payment receipts</p>
+        </div>
+        <span style="font-size: 20px; color: #64748b; font-weight: 600;">›</span>
       </div>
 
-      <!-- Receiving Accounts -->
-      <div class="card" onclick="navTo('accounts')" style="margin: 0; padding: 18px; display: flex; align-items: center; gap: 14px; cursor: pointer; border-color: rgba(10, 132, 255, 0.3); background: rgba(10, 132, 255, 0.05);">
-        <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(10, 132, 255, 0.2); display: flex; align-items: center; justify-content: center; font-size: 22px;">🏦</div>
-        <div style="flex: 1;">
-          <strong style="font-size: 16px; display: block; color: #0a84ff;">Receiving Accounts</strong>
-          <span style="font-size: 13px; color: var(--hint);">Setup CBE accounts & Telebirr numbers</span>
+      <!-- 2. Receiving Accounts -->
+      <div onclick="navTo('accounts')" style="background: rgba(10, 18, 36, 0.78); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); border-left: 3.5px solid #3b82f6; border-radius: 18px; padding: 14px 16px; display: flex; align-items: center; gap: 14px; cursor: pointer; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25); user-select: none;">
+        <div style="width: 48px; height: 48px; border-radius: 14px; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 21h18M3 10h18M5 10v11M9 10v11M15 10v11M19 10v11M12 2 2 7h20L12 2z" />
+          </svg>
         </div>
-        <div style="font-size: 18px; color: var(--hint);">→</div>
+        <div style="flex: 1; min-width: 0;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <strong style="font-size: 15.5px; font-weight: 700; color: #ffffff; display: block;">Receiving Accounts</strong>
+            <div style="display: inline-flex; align-items: center; gap: 4px;">
+              <img src="images/cbe-logo.png" style="width: 14px; height: 14px; object-fit: contain;" alt="CBE" />
+              <img src="images/telebirr-logo.png" style="width: 14px; height: 14px; object-fit: contain;" alt="Telebirr" />
+            </div>
+          </div>
+          <p style="font-size: 12px; color: #8fa2bd; margin: 3px 0 0; line-height: 1.3;">Manage CBE Bank accounts & Telebirr numbers</p>
+        </div>
+        <span style="font-size: 20px; color: #64748b; font-weight: 600;">›</span>
       </div>
 
-      <!-- Cashiers -->
-      <div class="card" onclick="navTo('cashiers')" style="margin: 0; padding: 18px; display: flex; align-items: center; gap: 14px; cursor: pointer; border-color: rgba(48, 209, 88, 0.3); background: rgba(48, 209, 88, 0.05);">
-        <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(48, 209, 88, 0.2); display: flex; align-items: center; justify-content: center; font-size: 22px;">👥</div>
-        <div style="flex: 1;">
-          <strong style="font-size: 16px; display: block; color: #30d158;">Cashiers</strong>
-          <span style="font-size: 13px; color: var(--hint);">Create and manage staff logins</span>
+      <!-- 3. Cashiers -->
+      <div onclick="navTo('cashiers')" style="background: rgba(10, 18, 36, 0.78); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); border-left: 3.5px solid #10b981; border-radius: 18px; padding: 14px 16px; display: flex; align-items: center; gap: 14px; cursor: pointer; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25); user-select: none;">
+        <div style="width: 48px; height: 48px; border-radius: 14px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+            <circle cx="9" cy="7" r="4" />
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
         </div>
-        <div style="font-size: 18px; color: var(--hint);">→</div>
+        <div style="flex: 1; min-width: 0;">
+          <strong style="font-size: 15.5px; font-weight: 700; color: #ffffff; display: block;">Cashiers</strong>
+          <p style="font-size: 12px; color: #8fa2bd; margin: 3px 0 0; line-height: 1.3;">Add staff cashiers, reset passwords & permissions</p>
+        </div>
+        <span style="font-size: 20px; color: #64748b; font-weight: 600;">›</span>
       </div>
 
-      <!-- Profile -->
-      <div class="card" onclick="navTo('profile')" style="margin: 0; padding: 18px; display: flex; align-items: center; gap: 14px; cursor: pointer; border-color: rgba(175, 82, 222, 0.3); background: rgba(175, 82, 222, 0.05);">
-        <div style="width: 44px; height: 44px; border-radius: 12px; background: rgba(175, 82, 222, 0.2); display: flex; align-items: center; justify-content: center; font-size: 22px;">👤</div>
-        <div style="flex: 1;">
-          <strong style="font-size: 16px; display: block; color: #bf5af2;">Profile & Settings</strong>
-          <span style="font-size: 13px; color: var(--hint);">Business details, branch info, sign out</span>
+      <!-- 4. Profile & Settings -->
+      <div onclick="navTo('profile')" style="background: rgba(10, 18, 36, 0.78); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); border-left: 3.5px solid #a855f7; border-radius: 18px; padding: 14px 16px; display: flex; align-items: center; gap: 14px; cursor: pointer; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25); user-select: none;">
+        <div style="width: 48px; height: 48px; border-radius: 14px; background: linear-gradient(135deg, #a855f7 0%, #7e22ce 100%); display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 4px 12px rgba(168, 85, 247, 0.3);">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+            <circle cx="12" cy="7" r="4" />
+          </svg>
         </div>
-        <div style="font-size: 18px; color: var(--hint);">→</div>
+        <div style="flex: 1; min-width: 0;">
+          <strong style="font-size: 15.5px; font-weight: 700; color: #ffffff; display: block;">Profile & Settings</strong>
+          <p style="font-size: 12px; color: #8fa2bd; margin: 3px 0 0; line-height: 1.3;">Branch info, phone number and sign out</p>
+        </div>
+        <span style="font-size: 20px; color: #64748b; font-weight: 600;">›</span>
       </div>
     </div>
   </div>
@@ -933,10 +1072,10 @@
 
 <!-- ── Bottom Nav ──────────────────────────────────────────────────── -->
 <nav class="bottom-nav" id="bottom-nav">
-  <button class="nav-item active" id="nav-home" onclick="navTo('home')">
+  <button class="nav-item" id="nav-home" onclick="navTo('home')">
     <span class="nav-icon">🏠</span>Home
   </button>
-  <button class="nav-item" id="nav-verify" onclick="navTo('verify')">
+  <button class="nav-item active" id="nav-verify" onclick="navTo('verify')">
     <span class="nav-icon">⚡</span>Verify
   </button>
   <button class="nav-item" id="nav-accounts" onclick="navTo('accounts')">

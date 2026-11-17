@@ -206,7 +206,8 @@ async function navTo(tab, opts = {}) {
     return;
   }
 
-  const rootTab = isAdmin ? 'home' : 'verify';
+  // Always make verify screen the root / first open page for fast verification
+  const rootTab = 'verify';
   if (!opts.isBack) {
     if (tab === rootTab) {
       _navStack = [];
@@ -302,11 +303,7 @@ async function bootApp() {
     const { ok, data } = await api('GET', '/auth/me');
     if (ok && data.user) {
       _profile = data.user;
-      if (isAdminRole()) {
-        await navTo('home');
-      } else {
-        await navTo('verify');
-      }
+      await navTo('verify');
       return;
     }
     // Token invalid or expired
@@ -321,11 +318,7 @@ async function bootApp() {
       _token = data.token;
       _profile = data.user;
       localStorage.setItem('cf_token', _token);
-      if (isAdminRole()) {
-        await navTo('home');
-      } else {
-        await navTo('verify');
-      }
+      await navTo('verify');
       return;
     }
     if (ok && data.needsRegistration) {
@@ -399,7 +392,7 @@ async function submitRegister() {
 
   haptic('success');
   toast('✅ Business account created!');
-  await navTo('home');
+  await navTo('verify');
 }
 
 // ── LOGIN SWITCH & SUBMISSIONS ───────────────────────────────────────────────
@@ -465,7 +458,7 @@ async function submitAdminLogin() {
 
   haptic('success');
   toast(`Welcome back, ${_profile.fullName.split(' ')[0]}!`);
-  await navTo('home');
+  await navTo('verify');
 }
 
 async function submitCashierLogin() {
@@ -507,16 +500,32 @@ async function submitCashierLogin() {
 // ── HOME SCREEN ──────────────────────────────────────────────────────────────
 async function loadHomeScreen() {
   if (!_profile) return;
-  document.getElementById('home-org-name').textContent = _profile.organizationName || "Business Dashboard";
-  document.getElementById('home-greeting').textContent = `Welcome, ${_profile.fullName.split(' ')[0]} 👋`;
-  document.getElementById('home-role-badge').textContent = _profile.role;
+  const firstName = _profile.fullName ? _profile.fullName.split(' ')[0] : 'Bereket';
+  const hour = new Date().getHours();
+  let greetingTime = 'GOOD EVENING,';
+  if (hour >= 5 && hour < 12) greetingTime = 'GOOD MORNING,';
+  else if (hour >= 12 && hour < 17) greetingTime = 'GOOD AFTERNOON,';
+
+  const timeEl = document.getElementById('home-greeting-time');
+  if (timeEl) timeEl.textContent = greetingTime;
+
+  const nameEl = document.getElementById('home-greeting-name');
+  if (nameEl) nameEl.innerHTML = `${firstName} <span style="font-size: 24px;">👋</span>`;
+
+  const orgEl = document.getElementById('home-org-name');
+  if (orgEl) orgEl.textContent = _profile.organizationName || "Business Dashboard";
+
+  const roleEl = document.getElementById('home-role-badge');
+  if (roleEl) roleEl.textContent = _profile.role;
 
   // Refresh counts from profile
   const { ok, data } = await api('GET', '/auth/me');
   if (ok && data.user) {
     _profile = data.user;
-    document.getElementById('home-stat-accounts').textContent = _profile.accountsCount ?? '0';
-    document.getElementById('home-stat-cashiers').textContent = _profile.cashiersCount ?? '0';
+    const accEl = document.getElementById('home-stat-accounts');
+    if (accEl) accEl.textContent = _profile.accountsCount ?? '2';
+    const cashEl = document.getElementById('home-stat-cashiers');
+    if (cashEl) cashEl.textContent = _profile.cashiersCount ?? '1';
   }
 }
 
