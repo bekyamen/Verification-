@@ -116,7 +116,10 @@ server = app.listen(port, () => {
         const https = await import('node:https');
         const mod = pingUrl.startsWith('https') ? https : http;
         mod.get(pingUrl, (res) => {
-          console.log(`[keep-alive] ping → ${res.statusCode}`);
+          res.resume();
+          if (res.statusCode !== 200) {
+            console.warn(`[keep-alive] ping → ${res.statusCode}`);
+          }
         }).on('error', (e) => {
           console.warn(`[keep-alive] ping failed: ${e.message}`);
         });

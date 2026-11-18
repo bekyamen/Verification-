@@ -178,9 +178,7 @@ export function validateBotConfig(): string[] {
   return errors;
 }
 
-// ── Helper: download Telegram file to a Buffer ───────────────────────────────
-
-const DOWNLOAD_MAX_ATTEMPTS = 3;
+// ── Helper: download Telegram file to a Buffer (hedged overlapping IPv4) ─────
 
 // Persistent keep-alive IPv4 agent for Telegram API file downloads
 const telegramDownloadAgent = new https.Agent({
@@ -230,47 +228,92 @@ async function downloadTelegramFile(
   fileId: string
 ): Promise<{ buffer: Buffer; mime: string }> {
   const token = BOT_TOKEN();
-  let lastErr: Error = new Error('Unknown download error');
 
-  for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
-    // Retry on a brand-new IPv4 connection in case the pooled keep-alive socket is stale
-    const agent = attempt === 1
-      ? telegramDownloadAgent
-      : new https.Agent({ keepAlive: false, family: 4 });
-    try {
-      const info = await axios.get<{ ok: boolean; result?: { file_path?: string } }>(
-        `https://api.telegram.org/bot${token}/getFile`,
-        {
-          params: { file_id: fileId },
-          timeout: 6_000,
-          httpsAgent: agent,
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let remaining = 3;
+    let lastErr: Error = new Error('Unknown download error');
+    const timers: NodeJS.Timeout[] = [];
+    const controllers: AbortController[] = [];
+
+    const cleanup = () => {
+      for (const t of timers) clearTimeout(t);
+      for (const c of controllers) {
+        try { c.abort(); } catch { /* ignore */ }
+      }
+    };
+
+    const launch = (delayMs: number, usePooledAgent: boolean) => {
+      const run = async () => {
+        if (settled) return;
+        const controller = new AbortController();
+        controllers.push(controller);
+
+        const agent = usePooledAgent
+          ? telegramDownloadAgent
+          : new https.Agent({ keepAlive: false, family: 4 });
+
+        try {
+          const info = await axios.get<{ ok: boolean; result?: { file_path?: string } }>(
+            `https://api.telegram.org/bot${token}/getFile`,
+            {
+              params: { file_id: fileId },
+              timeout: 4_000,
+              httpsAgent: agent,
+              signal: controller.signal,
+            }
+          );
+          if (settled) return;
+
+          const filePath: string | undefined = info.data?.result?.file_path;
+          if (!filePath) throw new Error('Telegram did not return a file_path');
+
+          const resp = await axios.get<ArrayBuffer>(
+            `https://api.telegram.org/file/bot${token}/${filePath}`,
+            {
+              responseType: 'arraybuffer',
+              timeout: 8_000,
+              httpsAgent: agent,
+              signal: controller.signal,
+            }
+          );
+          if (settled) return;
+
+          const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+          const mime =
+            ext === 'pdf'  ? 'application/pdf'  :
+            ext === 'png'  ? 'image/png'        :
+            ext === 'webp' ? 'image/webp'       :
+            'image/jpeg';
+
+          settled = true;
+          cleanup();
+          resolve({ buffer: Buffer.from(resp.data), mime });
+        } catch (err: any) {
+          if (settled) return;
+          lastErr = err;
+          logger.warn(`[telegram] download attempt failed (${err.code ?? err.message})`);
+          remaining -= 1;
+          if (remaining === 0) {
+            settled = true;
+            cleanup();
+            reject(lastErr);
+          }
         }
-      );
-      const filePath: string | undefined = info.data?.result?.file_path;
-      if (!filePath) throw new Error('Telegram did not return a file_path');
+      };
 
-      const resp = await axios.get<ArrayBuffer>(
-        `https://api.telegram.org/file/bot${token}/${filePath}`,
-        {
-          responseType: 'arraybuffer',
-          timeout: 8_000,
-          httpsAgent: agent,
-        }
-      );
-      const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-      const mime =
-        ext === 'pdf'  ? 'application/pdf'  :
-        ext === 'png'  ? 'image/png'        :
-        ext === 'webp' ? 'image/webp'       :
-        'image/jpeg';
-      return { buffer: Buffer.from(resp.data), mime };
-    } catch (err: any) {
-      lastErr = err;
-      logger.warn(`[telegram] download attempt ${attempt}/${DOWNLOAD_MAX_ATTEMPTS} failed (${err.code ?? err.message})`);
-    }
-  }
+      if (delayMs === 0) {
+        void run();
+      } else {
+        const timer = setTimeout(() => { void run(); }, delayMs);
+        timers.push(timer);
+      }
+    };
 
-  throw lastErr;
+    launch(0, true);
+    launch(1_500, false);
+    launch(3_000, false);
+  });
 }
 
 async function sendTyping(ctx: Context): Promise<void> {
@@ -621,7 +664,7 @@ export function createBot(): Bot {
       replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
     } catch (err: any) {
       logger.error(`[telegram] photo error: ${err.message}`);
-      replyText = '🆘 Failed to process this image\\. Please try again or send the receipt as a document \\(PDF\\)\\.';
+      replyText = '🆘 Failed to process this image\\. Please try again  \\.';
     }
 
     // Deliver reply by transforming the status message in-place for instant feedback
