@@ -1,6 +1,3 @@
-import dns from 'dns';
-dns.setDefaultResultOrder('ipv4first');
-
 import './polyfills';
 import dotenv from 'dotenv';
 dotenv.config();   // ← must run BEFORE any module that reads process.env at load time
@@ -116,10 +113,7 @@ server = app.listen(port, () => {
         const https = await import('node:https');
         const mod = pingUrl.startsWith('https') ? https : http;
         mod.get(pingUrl, (res) => {
-          res.resume();
-          if (res.statusCode !== 200) {
-            console.warn(`[keep-alive] ping → ${res.statusCode}`);
-          }
+          console.log(`[keep-alive] ping → ${res.statusCode}`);
         }).on('error', (e) => {
           console.warn(`[keep-alive] ping failed: ${e.message}`);
         });

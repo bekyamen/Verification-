@@ -28,22 +28,6 @@ function isAllowedReceiptUrl(url: string): boolean {
     return parseReceiptLink(url) !== null;
 }
 
-function validateQrData(raw: string | null | undefined): string | null {
-    if (!raw) return null;
-    const qrData = raw.trim();
-    if (!qrData) return null;
-    // Only return URLs that are genuine CBE or Telebirr receipt links.
-    // Any other URL (including SSRF bait like 169.254.x.x) is silently dropped.
-    if (qrData.startsWith('https://') || qrData.startsWith('http://')) {
-        return isAllowedReceiptUrl(qrData) ? qrData : null;
-    }
-    // Bare alphanumeric transaction references (no URL) pass through as-is
-    if (/^[A-Z0-9]{8,25}$/i.test(qrData)) {
-        return qrData;
-    }
-    return null;
-}
-
 async function renderPdfToPng(buffer: Buffer): Promise<Buffer | null> {
     const tempId = crypto.randomBytes(8).toString('hex');
     const pdfPath = path.join(os.tmpdir(), `${tempId}.pdf`);
@@ -81,50 +65,82 @@ export const decodeReceiptQr = async (buffer: Buffer, mimetype: string): Promise
             imageBuffer = rendered;
         }
 
-        // Single sharp decode directly to raw RGBA pixels (no redundant JPEG re-encode/decode cycles!)
-        const { data: raw900, info: info900 } = await sharp(imageBuffer)
+        /** Decode a prepared buffer. `invert` defaults to dontInvert for speed. */
+        const runDecode = async (
+            imgBuffer: Buffer,
+            invert: 'dontInvert' | 'attemptBoth' = 'dontInvert'
+        ): Promise<string | null> => {
+            try {
+                const { data, info } = await sharp(imgBuffer).raw().ensureAlpha().toBuffer({ resolveWithObject: true });
+                // Pass byteOffset and byteLength to avoid Node buffer pool offset corruption
+                const clampedArray = new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength);
+                const code = jsQR(clampedArray, info.width, info.height, {
+                    inversionAttempts: invert,
+                });
+                if (code && code.data) {
+                    const qrData = code.data.trim();
+                    // Only return URLs that are genuine CBE or Telebirr receipt links.
+                    // Any other URL (including SSRF bait like 169.254.x.x) is silently dropped.
+                    if (qrData.startsWith('https://') || qrData.startsWith('http://')) {
+                        return isAllowedReceiptUrl(qrData) ? qrData : null;
+                    }
+                    // Bare alphanumeric transaction references (no URL) pass through as-is
+                    if (/^[A-Z0-9]{8,25}$/i.test(qrData)) {
+                        return qrData;
+                    }
+                }
+                return null;
+            } catch {
+                return null;
+            }
+        };
+
+        // Rotate first (EXIF orientation), cap at 1400px, and reuse this base buffer
+        const { data: baseBuffer, info: baseInfo } = await sharp(imageBuffer)
             .rotate()
-            .resize({ width: 900, height: 900, fit: 'inside', withoutEnlargement: true })
-            .ensureAlpha()
-            .raw()
+            .resize({ width: 1400, height: 1400, fit: 'inside', withoutEnlargement: true })
             .toBuffer({ resolveWithObject: true });
 
-        const clamped900 = new Uint8ClampedArray(raw900.buffer, raw900.byteOffset, raw900.byteLength);
+        // Pass 1: 900px copy, no inversion (fastest path)
+        const small = (baseInfo.width <= 900 && baseInfo.height <= 900)
+            ? baseBuffer
+            : await sharp(baseBuffer)
+                .resize({ width: 900, height: 900, fit: 'inside', withoutEnlargement: true })
+                .toBuffer();
 
-        // Pass 1: Standard light-background QR (fastest path, ~15-30ms)
-        const p1 = jsQR(clamped900, info900.width, info900.height, { inversionAttempts: 'dontInvert' });
-        const r1 = validateQrData(p1?.data);
-        if (r1) return r1;
+        let qrUrl = await runDecode(small, 'dontInvert');
+        if (qrUrl) return qrUrl;
 
-        // Pass 2: Lower-half crop for tall portrait mobile receipts (zero sharp calls — subarray view!)
-        if (info900.height > info900.width * 1.15) {
-            const top = Math.floor(info900.height * 0.45);
-            const cropHeight = info900.height - top;
-            const sub = clamped900.subarray(top * info900.width * 4);
-            const p2 = jsQR(sub, info900.width, cropHeight, { inversionAttempts: 'dontInvert' });
-            const r2 = validateQrData(p2?.data);
-            if (r2) return r2;
+        // Pass 2: 900px grayscale + contrast boost
+        await yieldCpu();
+        const pass2Buffer = await sharp(small).grayscale().linear(1.5, -0.2).toBuffer();
+        qrUrl = await runDecode(pass2Buffer, 'dontInvert');
+        if (qrUrl) return qrUrl;
+
+        // Pass 3: crop lower half of portrait receipts (using rotated base image)
+        await yieldCpu();
+        if (baseInfo.height > baseInfo.width * 1.2) {
+            const top = Math.floor(baseInfo.height / 2);
+            const crop = await sharp(baseBuffer)
+                .extract({ left: 0, top, width: baseInfo.width, height: baseInfo.height - top })
+                .resize({ width: 900, height: 900, fit: 'inside', withoutEnlargement: true })
+                .toBuffer();
+            qrUrl = await runDecode(crop, 'dontInvert');
+            if (qrUrl) return qrUrl;
         }
 
-        // Pass 3: Dark-mode / inverted QR on the exact same in-memory raw buffer (zero sharp calls!)
+        // Pass 4: inverted / challenging codes on fast 900px buffer
         await yieldCpu();
-        const p3 = jsQR(clamped900, info900.width, info900.height, { inversionAttempts: 'onlyInvert' });
-        const r3 = validateQrData(p3?.data);
-        if (r3) return r3;
+        qrUrl = await runDecode(small, 'attemptBoth');
+        if (qrUrl) return qrUrl;
 
-        // Pass 4: Contrast-boosted higher-res decode (single sharp call directly to raw RGBA)
-        await yieldCpu();
-        const { data: rawBoost, info: infoBoost } = await sharp(imageBuffer)
-            .rotate()
-            .resize({ width: 1200, height: 1200, fit: 'inside', withoutEnlargement: true })
-            .grayscale()
-            .linear(1.5, -0.2)
-            .ensureAlpha()
-            .raw()
-            .toBuffer({ resolveWithObject: true });
-        const clampedBoost = new Uint8ClampedArray(rawBoost.buffer, rawBoost.byteOffset, rawBoost.byteLength);
-        const p4 = jsQR(clampedBoost, infoBoost.width, infoBoost.height, { inversionAttempts: 'dontInvert' });
-        return validateQrData(p4?.data);
+        // Pass 5 (extreme last resort): full base buffer without inverted double-scan
+        if (baseInfo.width > 900 || baseInfo.height > 900) {
+            await yieldCpu();
+            return await runDecode(baseBuffer, 'dontInvert');
+        }
+
+        return null;
     } catch (e) {
         return null;
     }
