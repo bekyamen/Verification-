@@ -181,18 +181,14 @@ export function validateBotConfig(): string[] {
 // ── Helper: download Telegram file to a Buffer ───────────────────────────────
 
 const DOWNLOAD_MAX_ATTEMPTS = 3;
-const DOWNLOAD_RETRY_DELAY_MS = 1_500;
 
-// Persistent keep-alive agent for Telegram API file downloads
+// Persistent keep-alive IPv4 agent for Telegram API file downloads
 const telegramDownloadAgent = new https.Agent({
   keepAlive: true,
   maxSockets: 30,
-  keepAliveMsecs: 60_000,
+  keepAliveMsecs: 30_000,
+  family: 4, // force IPv4 to avoid slow IPv6 routes on Render
 });
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Select the optimal photo size (~1000px - 1400px).
@@ -230,57 +226,47 @@ function parseCaptionAmount(caption?: string): number | undefined {
 }
 
 async function downloadTelegramFile(
-  bot: Bot,
+  _bot: Bot,
   fileId: string
 ): Promise<{ buffer: Buffer; mime: string }> {
   const token = BOT_TOKEN();
-  let filePath: string | undefined;
-
-  // Use the warm keep-alive TLS socket to api.telegram.org for getFile as well as download
-  try {
-    const infoResp = await axios.get<{ ok: boolean; result?: { file_path?: string } }>(
-      `https://api.telegram.org/bot${token}/getFile`,
-      {
-        params: { file_id: fileId },
-        timeout: 10_000,
-        httpsAgent: telegramDownloadAgent,
-      }
-    );
-    filePath = infoResp.data?.result?.file_path;
-  } catch {
-    // Fallback to grammY getFile
-  }
-
-  if (!filePath) {
-    const fileInfo = await bot.api.getFile(fileId);
-    filePath = fileInfo.file_path;
-  }
-  if (!filePath) throw new Error('Telegram did not return a file_path');
-
-  const url = `https://api.telegram.org/file/bot${token}/${filePath}`;
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-  const mime =
-    ext === 'pdf'  ? 'application/pdf'  :
-    ext === 'png'  ? 'image/png'        :
-    ext === 'webp' ? 'image/webp'       :
-    'image/jpeg';
-
   let lastErr: Error = new Error('Unknown download error');
 
   for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
+    // Retry on a brand-new IPv4 connection in case the pooled keep-alive socket is stale
+    const agent = attempt === 1
+      ? telegramDownloadAgent
+      : new https.Agent({ keepAlive: false, family: 4 });
     try {
-      const resp = await axios.get<ArrayBuffer>(url, {
-        responseType: 'arraybuffer',
-        timeout: 20_000,
-        httpsAgent: telegramDownloadAgent,
-      });
-      const buffer = Buffer.from(resp.data);
-      return { buffer, mime };
+      const info = await axios.get<{ ok: boolean; result?: { file_path?: string } }>(
+        `https://api.telegram.org/bot${token}/getFile`,
+        {
+          params: { file_id: fileId },
+          timeout: 6_000,
+          httpsAgent: agent,
+        }
+      );
+      const filePath: string | undefined = info.data?.result?.file_path;
+      if (!filePath) throw new Error('Telegram did not return a file_path');
+
+      const resp = await axios.get<ArrayBuffer>(
+        `https://api.telegram.org/file/bot${token}/${filePath}`,
+        {
+          responseType: 'arraybuffer',
+          timeout: 8_000,
+          httpsAgent: agent,
+        }
+      );
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+      const mime =
+        ext === 'pdf'  ? 'application/pdf'  :
+        ext === 'png'  ? 'image/png'        :
+        ext === 'webp' ? 'image/webp'       :
+        'image/jpeg';
+      return { buffer: Buffer.from(resp.data), mime };
     } catch (err: any) {
       lastErr = err;
-      logger.warn(`[telegram] File download attempt ${attempt}/${DOWNLOAD_MAX_ATTEMPTS} failed (${err.code ?? err.message})`);
-      if (attempt === DOWNLOAD_MAX_ATTEMPTS) break;
-      await sleep(DOWNLOAD_RETRY_DELAY_MS);
+      logger.warn(`[telegram] download attempt ${attempt}/${DOWNLOAD_MAX_ATTEMPTS} failed (${err.code ?? err.message})`);
     }
   }
 
@@ -325,7 +311,11 @@ export function createBot(): Bot {
     throw new Error('Cannot create Telegram bot: TELEGRAM_BOT_TOKEN is missing from .env');
   }
 
-  const bot = new Bot(BOT_TOKEN());
+  const bot = new Bot(BOT_TOKEN(), {
+    client: {
+      timeoutSeconds: 15,
+    },
+  });
 
   // ── /start ─────────────────────────────────────────────────────────────────
   bot.command('start', async (ctx) => {

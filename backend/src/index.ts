@@ -1,3 +1,6 @@
+import dns from 'dns';
+dns.setDefaultResultOrder('ipv4first');
+
 import './polyfills';
 import dotenv from 'dotenv';
 dotenv.config();   // ← must run BEFORE any module that reads process.env at load time

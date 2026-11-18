@@ -24,11 +24,12 @@ import FormData from 'form-data';
 import https from 'https';
 import logger from '../utils/logger';
 
-// Persistent keep-alive agent to avoid repeated TCP/TLS handshake latency on every poll
+// Persistent keep-alive IPv4 agent to avoid repeated TCP/TLS handshakes & slow IPv6 routes on Render
 const payproofAgent = new https.Agent({
   keepAlive: true,
   maxSockets: 25,
-  keepAliveMsecs: 60_000,
+  keepAliveMsecs: 30_000,
+  family: 4,
 });
 
 export interface PayProofLinkReceiptData {

@@ -46,9 +46,9 @@ const TOKEN_TIMEOUT_MS = 3_000;
 /** Timeout for the legacy apps.cbe.com.et portal — kept short; hedging covers slowness. */
 const LEGACY_TIMEOUT_MS = 4_500;
 
-// Keep-alive agents — reuses TCP connections across requests (saves ~300 ms handshake)
-const tokenAgent  = new https.Agent({ keepAlive: true });
-const legacyAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true });
+// Keep-alive IPv4 agents — reuses TCP connections across requests (saves ~300 ms handshake)
+const tokenAgent  = new https.Agent({ keepAlive: true, keepAliveMsecs: 30_000, family: 4 });
+const legacyAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true, keepAliveMsecs: 30_000, family: 4 });
 
 // ── Token-endpoint circuit breaker ────────────────────────────────────────────
 // Tracks consecutive network-level failures (ECONNABORTED, ETIMEDOUT, etc.).
