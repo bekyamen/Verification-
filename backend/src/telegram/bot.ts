@@ -21,7 +21,7 @@
  *   /status            → Dynamic bot status & statistics
  */
 
-import { Bot, Context, GrammyError, InlineKeyboard } from 'grammy';
+import { Bot, Context, GrammyError, InlineKeyboard, webhookCallback } from 'grammy';
 import crypto from 'crypto';
 import type express from 'express';
 import axios from 'axios';
@@ -94,15 +94,6 @@ export function clearUserContextCache(telegramId?: number | bigint | string): vo
   }
 }
 
-function getCachedUserContextSync(fromId: number | undefined): TelegramUserContext | null {
-  if (!fromId) return null;
-  const cached = userContextCache.get(fromId.toString());
-  if (cached && Date.now() < cached.expiresAt) {
-    return cached.context;
-  }
-  return null;
-}
-
 async function resolveUserContext(fromId: number | undefined): Promise<TelegramUserContext | null> {
   if (!fromId) return null;
   const key = fromId.toString();
@@ -118,65 +109,6 @@ async function resolveUserContext(fromId: number | undefined): Promise<TelegramU
     expiresAt: Date.now() + (context ? USER_CONTEXT_TTL_MS : 30 * 1000),
   });
   return context;
-}
-
-// ── Per-file_unique_id verification result cache ─────────────────────────────
-// Skips Telegram download & verification completely when the exact same photo/doc is re-sent.
-interface CachedFileOutcome {
-  status: number;
-  result: any;
-  expiresAt: number;
-}
-
-const FILE_OUTCOME_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const FILE_OUTCOME_MAX_ENTRIES = 500;
-const fileOutcomeCache = new Map<string, CachedFileOutcome>();
-
-function makeFileCacheKey(branchId: string, expectedAmount: number | undefined, fileUniqueId: string): string {
-  return `${branchId}:${expectedAmount ?? ''}:${fileUniqueId}`;
-}
-
-function getCachedFileOutcome(
-  branchId: string,
-  expectedAmount: number | undefined,
-  fileUniqueIds: string[]
-): { status: number; result: any } | null {
-  const now = Date.now();
-  for (const uid of fileUniqueIds) {
-    if (!uid) continue;
-    const key = makeFileCacheKey(branchId, expectedAmount, uid);
-    const entry = fileOutcomeCache.get(key);
-    if (entry) {
-      if (now < entry.expiresAt) {
-        return { status: entry.status, result: entry.result };
-      }
-      fileOutcomeCache.delete(key);
-    }
-  }
-  return null;
-}
-
-function setCachedFileOutcome(
-  branchId: string,
-  expectedAmount: number | undefined,
-  fileUniqueIds: string[],
-  outcome: { status: number; result: any }
-): void {
-  // Only cache verified results so errors/transient failures are never sticky
-  if (outcome.status !== 200 || outcome.result?.status !== 'VERIFIED') return;
-  const expiresAt = Date.now() + FILE_OUTCOME_TTL_MS;
-  for (const uid of fileUniqueIds) {
-    if (!uid) continue;
-    if (fileOutcomeCache.size >= FILE_OUTCOME_MAX_ENTRIES) {
-      const oldestKey = fileOutcomeCache.keys().next().value;
-      if (oldestKey) fileOutcomeCache.delete(oldestKey);
-    }
-    fileOutcomeCache.set(makeFileCacheKey(branchId, expectedAmount, uid), {
-      status: outcome.status,
-      result: outcome.result,
-      expiresAt,
-    });
-  }
 }
 
 /** Send friendly onboarding prompt with a Mini App button */
@@ -248,12 +180,19 @@ export function validateBotConfig(): string[] {
 
 // ── Helper: download Telegram file to a Buffer ───────────────────────────────
 
+const DOWNLOAD_MAX_ATTEMPTS = 3;
+const DOWNLOAD_RETRY_DELAY_MS = 1_500;
+
 // Persistent keep-alive agent for Telegram API file downloads
 const telegramDownloadAgent = new https.Agent({
   keepAlive: true,
   maxSockets: 30,
   keepAliveMsecs: 60_000,
 });
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Select the optimal photo size (~1000px - 1400px).
@@ -280,124 +219,41 @@ function selectOptimalPhoto(photos: Array<{ file_id: string; width: number; heig
   return photos[photos.length - 1];
 }
 
-function parseCaptionAmount(caption?: string): number | undefined {
-  if (!caption) return undefined;
-  const trimmed = caption.trim();
-  if (!trimmed) return undefined;
-  const m = trimmed.match(/^(?:etb|birr)?\s*(\d+(?:[.,]\d{1,2})?)\s*(?:etb|birr)?$/i);
-  if (!m) return undefined;
-  const val = parseFloat(m[1].replace(/,/g, ''));
-  return Number.isFinite(val) && val > 0 ? val : undefined;
-}
-
 async function downloadTelegramFile(
   bot: Bot,
-  fileId: string,
-  externalSignal?: AbortSignal
+  fileId: string
 ): Promise<{ buffer: Buffer; mime: string }> {
-  const token = BOT_TOKEN();
-  const mimeOf = (p: string) => {
-    const e = p.split('.').pop()?.toLowerCase();
-    return e === 'pdf' ? 'application/pdf' : e === 'png' ? 'image/png' : e === 'webp' ? 'image/webp' : 'image/jpeg';
-  };
-  const fileUrl = (p: string) => `https://api.telegram.org/file/bot${token}/${p}`;
+  const fileInfo = await bot.api.getFile(fileId);
+  if (!fileInfo.file_path) throw new Error('Telegram did not return a file_path');
 
-  const internalAbort = new AbortController();
-  const onExternalAbort = () => internalAbort.abort();
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      throw new Error('Download aborted');
+  const url = `https://api.telegram.org/file/bot${BOT_TOKEN()}/${fileInfo.file_path}`;
+  const ext = fileInfo.file_path.split('.').pop()?.toLowerCase() ?? '';
+  const mime =
+    ext === 'pdf'  ? 'application/pdf'  :
+    ext === 'png'  ? 'image/png'        :
+    ext === 'webp' ? 'image/webp'       :
+    'image/jpeg';
+
+  let lastErr: Error = new Error('Unknown download error');
+
+  for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
+    try {
+      const resp = await axios.get<ArrayBuffer>(url, {
+        responseType: 'arraybuffer',
+        timeout: 20_000,
+        httpsAgent: telegramDownloadAgent,
+      });
+      const buffer = Buffer.from(resp.data);
+      return { buffer, mime };
+    } catch (err: any) {
+      lastErr = err;
+      logger.warn(`[telegram] File download attempt ${attempt}/${DOWNLOAD_MAX_ATTEMPTS} failed (${err.code ?? err.message})`);
+      if (attempt === DOWNLOAD_MAX_ATTEMPTS) break;
+      await sleep(DOWNLOAD_RETRY_DELAY_MS);
     }
-    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
   }
 
-  const viaAxios = async (ms: number, label: string) => {
-    const t0 = Date.now();
-    const info = await axios.get<{ ok: boolean; result?: { file_path?: string } }>(
-      `https://api.telegram.org/bot${token}/getFile`,
-      { params: { file_id: fileId }, timeout: ms, signal: internalAbort.signal }
-    );
-    const p: string | undefined = info.data?.result?.file_path;
-    if (!p) throw new Error('no file_path');
-    const t1 = Date.now();
-    const r = await axios.get<ArrayBuffer>(fileUrl(p), {
-      responseType: 'arraybuffer',
-      timeout: ms,
-      signal: internalAbort.signal,
-    });
-    logger.info(`[telegram-dl] ${label} getFile=${t1 - t0}ms file=${Date.now() - t1}ms`);
-    return { buffer: Buffer.from(r.data), mime: mimeOf(p) };
-  };
-
-  const viaGrammy = async (label: string) => {
-    const t0 = Date.now();
-    const f = await bot.api.getFile(fileId, internalAbort.signal as any);
-    if (!f.file_path) throw new Error('no file_path');
-    const t1 = Date.now();
-    const r = await axios.get<ArrayBuffer>(fileUrl(f.file_path), {
-      responseType: 'arraybuffer',
-      timeout: 25_000,
-      signal: internalAbort.signal,
-    });
-    logger.info(`[telegram-dl] ${label} getFile=${t1 - t0}ms file=${Date.now() - t1}ms`);
-    return { buffer: Buffer.from(r.data), mime: mimeOf(f.file_path) };
-  };
-
-  // Start default-agent axios immediately at 0ms (proven fastest on Render),
-  // with grammY as a backup hedge at +2.5s if the first attempt stalls.
-  const attempts: Array<[number, () => Promise<{ buffer: Buffer; mime: string }>]> = [
-    [0,     () => viaAxios(25_000, 'direct')],
-    [2_500, () => viaGrammy('grammy')],
-  ];
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let failed = 0;
-    const timers: NodeJS.Timeout[] = [];
-
-    const cleanup = () => {
-      timers.forEach(clearTimeout);
-      internalAbort.abort();
-      if (externalSignal) {
-        externalSignal.removeEventListener('abort', onExternalAbort);
-      }
-    };
-
-    if (externalSignal) {
-      externalSignal.addEventListener('abort', () => {
-        if (!settled) {
-          settled = true;
-          cleanup();
-          reject(new Error('Download aborted'));
-        }
-      }, { once: true });
-    }
-
-    for (const [delay, fn] of attempts) {
-      timers.push(setTimeout(() => {
-        if (settled) return;
-        fn().then(
-          (r) => {
-            if (!settled) {
-              settled = true;
-              cleanup();
-              resolve(r);
-            }
-          },
-          (err: any) => {
-            if (!settled && err?.code !== 'ERR_CANCELED') {
-              logger.warn(`[telegram] download attempt failed (${err.code ?? err.message})`);
-            }
-            if (++failed === attempts.length && !settled) {
-              settled = true;
-              cleanup();
-              reject(err);
-            }
-          }
-        );
-      }, delay));
-    }
-  });
+  throw lastErr;
 }
 
 async function sendTyping(ctx: Context): Promise<void> {
@@ -703,106 +559,43 @@ export function createBot(): Bot {
 
   // ── Photo handler: receipt screenshot ──────────────────────────────────────
   bot.on('message:photo', async (ctx) => {
-    const tStart = Date.now();
     const fromId  = ctx.from?.id;
-    const photos = ctx.message.photo;
-    const expectedAmount = parseCaptionAmount(ctx.message.caption);
-    const allUniqueIds = photos.map((p) => p.file_unique_id).filter(Boolean);
-
-    // Pick up to 2 photo sizes >= 700px to race concurrently (Telegram stores each size separately)
-    const filteredCandidates = photos.filter((p) => Math.max(p.width, p.height) >= 700).slice(0, 2);
-    const candidates = filteredCandidates.length > 0 ? filteredCandidates : [selectOptimalPhoto(photos)];
-    const dimsLabel = candidates.map((c) => `${c.width}x${c.height}`).join(',');
-
-    // Fast cache check BEFORE starting any Telegram download (instant repeat re-checks!)
-    const cachedUserSync = getCachedUserContextSync(fromId);
-    if (cachedUserSync) {
-      const cachedOutcome = getCachedFileOutcome(cachedUserSync.branchId, expectedAmount, allUniqueIds);
-      if (cachedOutcome) {
-        logger.info(`[telegram] photo cache HIT user=${cachedUserSync.fullName} uniqueId=${allUniqueIds[allUniqueIds.length - 1]}`);
-        const replyText = formatVerificationResult({ httpStatus: cachedOutcome.status, result: cachedOutcome.result });
-        const tReply = Date.now();
-        try {
-          await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
-          logger.info(`[telegram-perf] photo cache=HIT download=0ms verify=0ms reply=${Date.now() - tReply}ms total=${Date.now() - tStart}ms`);
-        } catch (sendErr: any) {
-          logger.error(`[telegram] photo cached reply failed: ${sendErr.message}`);
-        }
-        return;
-      }
-    }
-
-    // Fire typing, user lookup, and raced multi-size Telegram downloads ALL IN PARALLEL!
-    sendTyping(ctx).catch(() => {});
-    const raceAbort = new AbortController();
-    const dlPromises = candidates.map((c) => downloadTelegramFile(bot, c.file_id, raceAbort.signal));
-    dlPromises.forEach((p) => p.catch(() => {}));
-    const downloadPromise = Promise.any(dlPromises).then((res) => {
-      raceAbort.abort();
-      return res;
-    });
-    downloadPromise.catch(() => {});
-
     const userCtx = await resolveUserContext(fromId);
+
     if (!userCtx) {
-      raceAbort.abort();
       await sendRegisterPrompt(ctx, bot);
       return;
     }
 
-    // Secondary cache check if user context wasn't cached yet
-    const cachedOutcome = getCachedFileOutcome(userCtx.branchId, expectedAmount, allUniqueIds);
-    if (cachedOutcome) {
-      raceAbort.abort();
-      logger.info(`[telegram] photo cache HIT user=${userCtx.fullName} uniqueId=${allUniqueIds[allUniqueIds.length - 1]}`);
-      const replyText = formatVerificationResult({ httpStatus: cachedOutcome.status, result: cachedOutcome.result });
-      const tReply = Date.now();
-      try {
-        await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
-        logger.info(`[telegram-perf] photo cache=HIT download=0ms verify=0ms reply=${Date.now() - tReply}ms total=${Date.now() - tStart}ms`);
-      } catch (sendErr: any) {
-        logger.error(`[telegram] photo cached reply failed: ${sendErr.message}`);
-      }
-      return;
-    }
+    const photos = ctx.message.photo;
+    const targetPhoto = selectOptimalPhoto(photos);
+    logger.info(`[telegram] photo verify user=${userCtx.fullName} (${userCtx.organizationName}) dim=${targetPhoto.width}x${targetPhoto.height} fileId=${targetPhoto.file_id}`);
 
+    // Fire typing and status prompt in parallel with download (do not block!)
+    sendTyping(ctx).catch(() => {});
     const statusMsgPromise = ctx.reply('⏳ Verifying receipt photo\\.\\.\\.', { parse_mode: 'MarkdownV2' }).catch(() => null);
-    logger.info(`[telegram] photo verify user=${userCtx.fullName} (${userCtx.organizationName}) dims=[${dimsLabel}] uniqueId=${allUniqueIds[allUniqueIds.length - 1]}`);
 
     let replyText: string;
-    let downloadMs = 0;
-    let verifyMs = 0;
     try {
-      const { buffer, mime } = await downloadPromise;
-      downloadMs = Date.now() - tStart;
-
-      const tVerify = Date.now();
+      const { buffer, mime } = await downloadTelegramFile(bot, targetPhoto.file_id);
       const outcome = await runImageVerification({
         buffer,
         mimetype:  mime,
         branchId:  userCtx.branchId,
         cashierId: userCtx.userId,
-        expectedAmount,
       });
-      verifyMs = Date.now() - tVerify;
-      setCachedFileOutcome(userCtx.branchId, expectedAmount, allUniqueIds, outcome);
       logger.info(`[telegram] photo result: ${formatStatusLine(outcome.result)}`);
       replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
     } catch (err: any) {
-      const errMsg = err instanceof AggregateError
-        ? (err.errors?.[err.errors.length - 1]?.message ?? err.message)
-        : err.message;
-      logger.error(`[telegram] photo error: ${errMsg}`);
+      logger.error(`[telegram] photo error: ${err.message}`);
       replyText = '🆘 Failed to process this image\\. Please try again or send the receipt as a document \\(PDF\\)\\.';
     }
 
     // Deliver reply by transforming the status message in-place for instant feedback
-    const tReply = Date.now();
     const statusMsg = await statusMsgPromise;
     if (statusMsg) {
       try {
         await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, replyText, { parse_mode: 'MarkdownV2' });
-        logger.info(`[telegram-perf] photo download=${downloadMs}ms verify=${verifyMs}ms reply=${Date.now() - tReply}ms total=${Date.now() - tStart}ms`);
         return;
       } catch {
         // Fall back to new reply if edit fails
@@ -810,7 +603,6 @@ export function createBot(): Bot {
     }
     try {
       await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
-      logger.info(`[telegram-perf] photo download=${downloadMs}ms verify=${verifyMs}ms reply=${Date.now() - tReply}ms total=${Date.now() - tStart}ms`);
     } catch (sendErr: any) {
       logger.error(`[telegram] photo reply failed: ${sendErr.message}`);
     }
@@ -818,7 +610,6 @@ export function createBot(): Bot {
 
   // ── Document handler: PDF receipts or uncompressed images ──────────────────
   bot.on('message:document', async (ctx) => {
-    const tStart   = Date.now();
     const doc      = ctx.message.document;
     const mimeType = doc.mime_type ?? '';
     const isImage  = mimeType.startsWith('image/');
@@ -835,74 +626,27 @@ export function createBot(): Bot {
     }
 
     const fromId  = ctx.from?.id;
-    const expectedAmount = parseCaptionAmount(ctx.message.caption);
-    const uniqueIds = doc.file_unique_id ? [doc.file_unique_id] : [];
-
-    // Fast cache check BEFORE starting any Telegram download
-    const cachedUserSync = getCachedUserContextSync(fromId);
-    if (cachedUserSync && uniqueIds.length > 0) {
-      const cachedOutcome = getCachedFileOutcome(cachedUserSync.branchId, expectedAmount, uniqueIds);
-      if (cachedOutcome) {
-        logger.info(`[telegram] document cache HIT user=${cachedUserSync.fullName} uniqueId=${doc.file_unique_id}`);
-        const replyText = formatVerificationResult({ httpStatus: cachedOutcome.status, result: cachedOutcome.result });
-        const tReply = Date.now();
-        try {
-          await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
-          logger.info(`[telegram-perf] document cache=HIT download=0ms verify=0ms reply=${Date.now() - tReply}ms total=${Date.now() - tStart}ms`);
-        } catch (sendErr: any) {
-          logger.error(`[telegram] document cached reply failed: ${sendErr.message}`);
-        }
-        return;
-      }
-    }
-
-    // Fire typing, user lookup, and Telegram file download ALL IN PARALLEL immediately!
-    sendTyping(ctx).catch(() => {});
-    const downloadPromise = downloadTelegramFile(bot, doc.file_id);
-    downloadPromise.catch(() => {});
-
     const userCtx = await resolveUserContext(fromId);
+
     if (!userCtx) {
       await sendRegisterPrompt(ctx, bot);
       return;
     }
 
-    if (uniqueIds.length > 0) {
-      const cachedOutcome = getCachedFileOutcome(userCtx.branchId, expectedAmount, uniqueIds);
-      if (cachedOutcome) {
-        logger.info(`[telegram] document cache HIT user=${userCtx.fullName} uniqueId=${doc.file_unique_id}`);
-        const replyText = formatVerificationResult({ httpStatus: cachedOutcome.status, result: cachedOutcome.result });
-        const tReply = Date.now();
-        try {
-          await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
-          logger.info(`[telegram-perf] document cache=HIT download=0ms verify=0ms reply=${Date.now() - tReply}ms total=${Date.now() - tStart}ms`);
-        } catch (sendErr: any) {
-          logger.error(`[telegram] document cached reply failed: ${sendErr.message}`);
-        }
-        return;
-      }
-    }
-
+    sendTyping(ctx).catch(() => {});
     const statusMsgPromise = ctx.reply(`⏳ Verifying ${isPdf ? 'PDF' : 'image'} document\\.\\.\\.`, { parse_mode: 'MarkdownV2' }).catch(() => null);
+
     logger.info(`[telegram] document verify user=${userCtx.fullName} (${userCtx.organizationName}) mime=${mimeType} fileId=${doc.file_id}`);
 
     let replyText: string;
-    let downloadMs = 0;
-    let verifyMs = 0;
     try {
-      const { buffer, mime } = await downloadPromise;
-      downloadMs = Date.now() - tStart;
-
-      const tVerify = Date.now();
+      const { buffer, mime } = await downloadTelegramFile(bot, doc.file_id);
       const outcome = await runImageVerification({
         buffer,
         mimetype:  isPdf ? 'application/pdf' : mime,
         branchId:  userCtx.branchId,
         cashierId: userCtx.userId,
-        expectedAmount,
       });
-      verifyMs = Date.now() - tVerify;
-      setCachedFileOutcome(userCtx.branchId, expectedAmount, uniqueIds, outcome);
       logger.info(`[telegram] document result: ${formatStatusLine(outcome.result)}`);
       replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
     } catch (err: any) {
@@ -910,12 +654,10 @@ export function createBot(): Bot {
       replyText = '🆘 Failed to process this document\\. Please try again\\.';
     }
 
-    const tReply = Date.now();
     const statusMsg = await statusMsgPromise;
     if (statusMsg) {
       try {
         await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, replyText, { parse_mode: 'MarkdownV2' });
-        logger.info(`[telegram-perf] document download=${downloadMs}ms verify=${verifyMs}ms reply=${Date.now() - tReply}ms total=${Date.now() - tStart}ms`);
         return;
       } catch {
         // Fall back to new reply if edit fails
@@ -923,7 +665,6 @@ export function createBot(): Bot {
     }
     try {
       await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
-      logger.info(`[telegram-perf] document download=${downloadMs}ms verify=${verifyMs}ms reply=${Date.now() - tReply}ms total=${Date.now() - tStart}ms`);
     } catch (sendErr: any) {
       logger.error(`[telegram] document reply failed: ${sendErr.message}`);
     }
@@ -1032,7 +773,6 @@ export function createBot(): Bot {
     }
 
     // ── Normal verification path ───────────────────────────────────────────────
-    const tStart = Date.now();
     const userCtx = await resolveUserContext(fromId);
 
     if (!userCtx) {
@@ -1040,22 +780,21 @@ export function createBot(): Bot {
       return;
     }
 
+    await sendTyping(ctx);
+
     const isUrl = /^https?:\/\//i.test(text);
-    // Fire typing & status prompt in parallel with verification (never block verifyText!)
-    sendTyping(ctx).catch(() => {});
-    const statusMsgPromise = ctx.reply(
-      `⏳ Verifying ${isUrl ? 'URL' : 'text reference'}\\.\\.\\.`,
-      { parse_mode: 'MarkdownV2' }
-    ).catch(() => null);
+    try {
+      await ctx.reply(
+        `⏳ Verifying ${isUrl ? 'URL' : 'text reference'}\\.\\.\\.`,
+        { parse_mode: 'MarkdownV2' }
+      );
+    } catch { /* non-critical */ }
 
     logger.info(`[telegram] text verify user=${userCtx.fullName} (${userCtx.organizationName}) isUrl=${isUrl}`);
 
     let replyText: string;
-    let verifyMs = 0;
     try {
-      const tVerify = Date.now();
       const outcome = await verifyText(text, userCtx.branchId, userCtx.userId);
-      verifyMs = Date.now() - tVerify;
       logger.info(`[telegram] text result: ${formatStatusLine(outcome.result)}`);
       replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
     } catch (err: any) {
@@ -1063,20 +802,8 @@ export function createBot(): Bot {
       replyText = '🆘 Failed to process this text\\. Please check the reference and try again\\.';
     }
 
-    const tReply = Date.now();
-    const statusMsg = await statusMsgPromise;
-    if (statusMsg) {
-      try {
-        await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, replyText, { parse_mode: 'MarkdownV2' });
-        logger.info(`[telegram-perf] text verify=${verifyMs}ms reply=${Date.now() - tReply}ms total=${Date.now() - tStart}ms`);
-        return;
-      } catch {
-        // Fall back to new reply if edit fails
-      }
-    }
     try {
       await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
-      logger.info(`[telegram-perf] text verify=${verifyMs}ms reply=${Date.now() - tReply}ms total=${Date.now() - tStart}ms`);
     } catch (sendErr: any) {
       logger.error(`[telegram] text reply failed: ${sendErr.message}`);
     }
@@ -1114,37 +841,15 @@ function getWebhookSecretToken(): string {
 }
 
 let activeBot: Bot | null = null;
-let botInitPromise: Promise<void> | null = null;
+let webhookRequestHandler: ((req: express.Request, res: express.Response) => Promise<void> | void) | null = null;
 let retryTimer: NodeJS.Timeout | null = null;
-let telegramWarmupTimer: NodeJS.Timeout | null = null;
 let isShuttingDown = false;
 
 function getOrCreateBot(): Bot {
   if (!activeBot) {
     activeBot = createBot();
-    botInitPromise = null;
   }
   return activeBot;
-}
-
-async function ensureBotInited(bot: Bot): Promise<void> {
-  if (bot.isInited()) return;
-  if (!botInitPromise) {
-    botInitPromise = bot.init().catch((err) => {
-      botInitPromise = null;
-      throw err;
-    });
-  }
-  await botInitPromise;
-}
-
-function isValidWebhookSecret(headerVal: string | string[] | undefined): boolean {
-  const received = Array.isArray(headerVal) ? headerVal[0] : headerVal;
-  if (!received) return false;
-  const expected = getWebhookSecretToken();
-  const a = Buffer.from(received, 'utf8');
-  const b = Buffer.from(expected, 'utf8');
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 function clearRetryTimer(): void {
@@ -1152,24 +857,6 @@ function clearRetryTimer(): void {
     clearTimeout(retryTimer);
     retryTimer = null;
   }
-}
-
-function clearTelegramWarmupTimer(): void {
-  if (telegramWarmupTimer) {
-    clearInterval(telegramWarmupTimer);
-    telegramWarmupTimer = null;
-  }
-}
-
-function startTelegramWarmupTimer(): void {
-  clearTelegramWarmupTimer();
-  telegramWarmupTimer = setInterval(() => {
-    axios.get(`https://api.telegram.org/bot${BOT_TOKEN()}/getMe`, {
-      httpsAgent: telegramDownloadAgent,
-      timeout: 5_000,
-    }).catch(() => {});
-  }, 25_000);
-  telegramWarmupTimer.unref?.();
 }
 
 function scheduleBotRetry(nextAttempt: number, delayMs: number): void {
@@ -1185,12 +872,9 @@ function scheduleBotRetry(nextAttempt: number, delayMs: number): void {
 /**
  * Express middleware handling incoming Telegram webhook POSTs when webhook mode is enabled
  * (e.g. on Render where RENDER_EXTERNAL_URL is set).
- *
- * Responds 200 OK immediately so Telegram never times out and retries slow updates,
- * while downloading and verifying receipts asynchronously in the background.
  */
 export function getTelegramWebhookMiddleware(): express.RequestHandler {
-  return (req: express.Request, res: express.Response) => {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (!shouldUseWebhook()) {
       res.status(404).json({ ok: false, error: 'Telegram webhook mode is not active' });
       return;
@@ -1199,29 +883,17 @@ export function getTelegramWebhookMiddleware(): express.RequestHandler {
       res.status(503).json({ ok: false, error: 'Telegram bot is not configured' });
       return;
     }
-    if (!isValidWebhookSecret(req.headers['x-telegram-bot-api-secret-token'])) {
-      res.status(401).json({ ok: false, error: 'Invalid webhook secret token' });
-      return;
+
+    if (!webhookRequestHandler) {
+      const bot = getOrCreateBot();
+      webhookRequestHandler = webhookCallback(bot, 'express', {
+        onTimeout: 'return',
+        timeoutMilliseconds: 25_000,
+        secretToken: getWebhookSecretToken(),
+      });
     }
 
-    const update = req.body;
-    if (!update || typeof update !== 'object') {
-      res.status(400).json({ ok: false, error: 'Invalid Telegram update payload' });
-      return;
-    }
-
-    // Respond 200 immediately so Telegram won't retry while download/verification runs
-    res.status(200).json({ ok: true });
-
-    const bot = getOrCreateBot();
-    void (async () => {
-      try {
-        await ensureBotInited(bot);
-        await bot.handleUpdate(update);
-      } catch (err: any) {
-        logger.error(`[telegram] Background webhook update error: ${err?.message ?? err}`);
-      }
-    })();
+    Promise.resolve(webhookRequestHandler(req, res)).catch(next);
   };
 }
 
@@ -1232,7 +904,7 @@ async function runBotLoop(attempt = 1): Promise<void> {
     const webhookUrl = `${getWebhookBaseUrl()}${TELEGRAM_WEBHOOK_PATH}`;
     try {
       const bot = getOrCreateBot();
-      await ensureBotInited(bot);
+      await bot.init();
       if (bot.botInfo?.username) {
         _botUsername = bot.botInfo.username;
         logger.info(`[telegram] Bot username: @${_botUsername}`);
@@ -1242,9 +914,6 @@ async function runBotLoop(attempt = 1): Promise<void> {
         secret_token: getWebhookSecretToken(),
         drop_pending_updates: false,
       });
-
-      // Keep the pooled HTTPS connection to api.telegram.org warm so Render does not drop idle sockets
-      startTelegramWarmupTimer();
 
       logger.info(`[telegram] ✅ Bot @${_botUsername ?? 'bot'} webhook active → ${webhookUrl} (Multi-tenant mode)`);
       return;
@@ -1265,7 +934,7 @@ async function runBotLoop(attempt = 1): Promise<void> {
   try {
     bot = createBot();
     activeBot = bot;
-    botInitPromise = null;
+    webhookRequestHandler = null;
 
     logger.info('[telegram] Clearing any existing webhook...');
     await bot.api.deleteWebhook({ drop_pending_updates: false });
@@ -1319,7 +988,6 @@ async function runBotLoop(attempt = 1): Promise<void> {
 export async function stopBot(): Promise<void> {
   isShuttingDown = true;
   clearRetryTimer();
-  clearTelegramWarmupTimer();
 
   const bot = activeBot;
   if (bot && bot.isRunning()) {
