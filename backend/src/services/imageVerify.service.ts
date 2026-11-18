@@ -20,6 +20,7 @@ import { dissectPayload } from './linkDissector';
 import { parseReceiptLink } from './receiptLink';
 import { processVerification } from './verification.service';
 import { verifyTelebirrReceiptWithPayProof } from './payproof.service';
+import { isCbeTokenCircuitOpen } from './verifyCBE';
 import { accountsCache } from '../utils/verifyCache';
 import prisma from '../utils/prisma';
 import { Prisma } from '@prisma/client';
@@ -271,7 +272,7 @@ export async function runImageVerification(
   );
 
   const cbeTokenRouteDisabled = process.env.CBE_TOKEN_ROUTE === 'off';
-  const isDoomedCbeToken = qrIsCbeToken && cbeTokenRouteDisabled;
+  const isDoomedCbeToken = qrIsCbeToken && (cbeTokenRouteDisabled || isCbeTokenCircuitOpen());
 
   const qrNormalized = qrValue ? dissectPayload(qrValue) : null;
   const qrHasUsableRef = !!(qrNormalized && qrNormalized.txnReference && qrNormalized.provider !== 'UNKNOWN');

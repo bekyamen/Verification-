@@ -292,7 +292,8 @@ function parseCaptionAmount(caption?: string): number | undefined {
 
 async function downloadTelegramFile(
   bot: Bot,
-  fileId: string
+  fileId: string,
+  externalSignal?: AbortSignal
 ): Promise<{ buffer: Buffer; mime: string }> {
   const token = BOT_TOKEN();
   const mimeOf = (p: string) => {
@@ -301,11 +302,20 @@ async function downloadTelegramFile(
   };
   const fileUrl = (p: string) => `https://api.telegram.org/file/bot${token}/${p}`;
 
-  const viaAxios = async (agent: https.Agent | undefined, ms: number, label: string) => {
+  const internalAbort = new AbortController();
+  const onExternalAbort = () => internalAbort.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      throw new Error('Download aborted');
+    }
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  const viaAxios = async (ms: number, label: string) => {
     const t0 = Date.now();
     const info = await axios.get<{ ok: boolean; result?: { file_path?: string } }>(
       `https://api.telegram.org/bot${token}/getFile`,
-      { params: { file_id: fileId }, timeout: ms, httpsAgent: agent }
+      { params: { file_id: fileId }, timeout: ms, signal: internalAbort.signal }
     );
     const p: string | undefined = info.data?.result?.file_path;
     if (!p) throw new Error('no file_path');
@@ -313,7 +323,7 @@ async function downloadTelegramFile(
     const r = await axios.get<ArrayBuffer>(fileUrl(p), {
       responseType: 'arraybuffer',
       timeout: ms,
-      httpsAgent: agent,
+      signal: internalAbort.signal,
     });
     logger.info(`[telegram-dl] ${label} getFile=${t1 - t0}ms file=${Date.now() - t1}ms`);
     return { buffer: Buffer.from(r.data), mime: mimeOf(p) };
@@ -321,27 +331,48 @@ async function downloadTelegramFile(
 
   const viaGrammy = async (label: string) => {
     const t0 = Date.now();
-    const f = await bot.api.getFile(fileId); // same client that sends replies
+    const f = await bot.api.getFile(fileId, internalAbort.signal as any);
     if (!f.file_path) throw new Error('no file_path');
     const t1 = Date.now();
     const r = await axios.get<ArrayBuffer>(fileUrl(f.file_path), {
       responseType: 'arraybuffer',
-      timeout: 25_000, // default agent, no custom options
+      timeout: 25_000,
+      signal: internalAbort.signal,
     });
     logger.info(`[telegram-dl] ${label} getFile=${t1 - t0}ms file=${Date.now() - t1}ms`);
     return { buffer: Buffer.from(r.data), mime: mimeOf(f.file_path) };
   };
 
+  // Start default-agent axios immediately at 0ms (proven fastest on Render),
+  // with grammY as a backup hedge at +2.5s if the first attempt stalls.
   const attempts: Array<[number, () => Promise<{ buffer: Buffer; mime: string }>]> = [
-    [0,     () => viaAxios(telegramDownloadAgent, 4_000, 'pooled')],
-    [1_500, () => viaGrammy('grammy')],
-    [3_000, () => viaAxios(undefined, 25_000, 'patient')],
+    [0,     () => viaAxios(25_000, 'direct')],
+    [2_500, () => viaGrammy('grammy')],
   ];
 
   return new Promise((resolve, reject) => {
     let settled = false;
     let failed = 0;
     const timers: NodeJS.Timeout[] = [];
+
+    const cleanup = () => {
+      timers.forEach(clearTimeout);
+      internalAbort.abort();
+      if (externalSignal) {
+        externalSignal.removeEventListener('abort', onExternalAbort);
+      }
+    };
+
+    if (externalSignal) {
+      externalSignal.addEventListener('abort', () => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(new Error('Download aborted'));
+        }
+      }, { once: true });
+    }
+
     for (const [delay, fn] of attempts) {
       timers.push(setTimeout(() => {
         if (settled) return;
@@ -349,17 +380,17 @@ async function downloadTelegramFile(
           (r) => {
             if (!settled) {
               settled = true;
-              timers.forEach(clearTimeout);
+              cleanup();
               resolve(r);
             }
           },
           (err: any) => {
-            if (!settled) {
+            if (!settled && err?.code !== 'ERR_CANCELED') {
               logger.warn(`[telegram] download attempt failed (${err.code ?? err.message})`);
             }
             if (++failed === attempts.length && !settled) {
               settled = true;
-              timers.forEach(clearTimeout);
+              cleanup();
               reject(err);
             }
           }
@@ -703,13 +734,18 @@ export function createBot(): Bot {
 
     // Fire typing, user lookup, and raced multi-size Telegram downloads ALL IN PARALLEL!
     sendTyping(ctx).catch(() => {});
-    const dlPromises = candidates.map((c) => downloadTelegramFile(bot, c.file_id));
+    const raceAbort = new AbortController();
+    const dlPromises = candidates.map((c) => downloadTelegramFile(bot, c.file_id, raceAbort.signal));
     dlPromises.forEach((p) => p.catch(() => {}));
-    const downloadPromise = Promise.any(dlPromises);
+    const downloadPromise = Promise.any(dlPromises).then((res) => {
+      raceAbort.abort();
+      return res;
+    });
     downloadPromise.catch(() => {});
 
     const userCtx = await resolveUserContext(fromId);
     if (!userCtx) {
+      raceAbort.abort();
       await sendRegisterPrompt(ctx, bot);
       return;
     }
@@ -717,6 +753,7 @@ export function createBot(): Bot {
     // Secondary cache check if user context wasn't cached yet
     const cachedOutcome = getCachedFileOutcome(userCtx.branchId, expectedAmount, allUniqueIds);
     if (cachedOutcome) {
+      raceAbort.abort();
       logger.info(`[telegram] photo cache HIT user=${userCtx.fullName} uniqueId=${allUniqueIds[allUniqueIds.length - 1]}`);
       const replyText = formatVerificationResult({ httpStatus: cachedOutcome.status, result: cachedOutcome.result });
       const tReply = Date.now();

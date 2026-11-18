@@ -56,10 +56,14 @@ const legacyAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true
 // While open, callers skip the token fetch and receive FAILED_UPSTREAM immediately,
 // saving TOKEN_TIMEOUT_MS × accounts of dead-wait time per request.
 const CIRCUIT_OPEN_THRESHOLD = 1;  // open after the first network failure
-const CIRCUIT_RESET_MS       = 60_000; // stay open for 60 s then auto-reset
+const CIRCUIT_RESET_MS       = 10 * 60_000; // stay open for 10 min then auto-reset
 
 let _circuitFailures  = 0;
 let _circuitOpenUntil = 0; // epoch ms; 0 = closed
+
+export function isCbeTokenCircuitOpen(): boolean {
+  return circuitIsOpen();
+}
 
 function circuitIsOpen(): boolean {
   if (_circuitOpenUntil && Date.now() < _circuitOpenUntil) return true;
