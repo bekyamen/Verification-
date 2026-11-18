@@ -119,7 +119,7 @@ export interface VerifyPayProofOptions {
 
 const DEFAULT_BASE_URL = 'https://verifyitet.duckdns.org';
 const DEFAULT_TIMEOUT_MS = 75000; // 75 seconds safety timeout
-const DEFAULT_POLL_INTERVAL_MS = 1000; // 1 second for fast turnaround
+const DEFAULT_POLL_INTERVAL_MS = 650; // 650ms fast polling over keep-alive TLS
 
 function getBaseUrl(): string {
   const url = process.env.PAYPROOF_BASE_URL?.trim() || DEFAULT_BASE_URL;
@@ -200,14 +200,38 @@ export async function uploadReceiptToPayProof(
     throw new Error('PAYPROOF_SECRET_KEY is not configured on the server.');
   }
 
+  // Compress oversized images (> 180KB) just like the Mini App frontend does (~25ms, speeds up upload 2-5x)
+  let uploadBuffer = imageBuffer;
+  let uploadFilename = filename;
+  let uploadMimetype = mimetype;
+  if (imageBuffer.length > 180_000 && mimetype.startsWith('image/')) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const sharpMod = require('sharp');
+      const sharpFn: (input: Buffer) => any = sharpMod.default ?? sharpMod;
+      const compressed: Buffer = await sharpFn(imageBuffer)
+        .rotate()
+        .resize({ width: 1200, height: 2200, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 82 })
+        .toBuffer();
+      if (compressed.length < imageBuffer.length) {
+        uploadBuffer = compressed;
+        uploadFilename = 'receipt.jpg';
+        uploadMimetype = 'image/jpeg';
+      }
+    } catch {
+      // Safely fall back to original buffer
+    }
+  }
+
   const formData = new FormData();
-  formData.append('images[]', imageBuffer, {
-    filename,
-    contentType: mimetype,
+  formData.append('images[]', uploadBuffer, {
+    filename: uploadFilename,
+    contentType: uploadMimetype,
   });
 
   const uploadUrl = `${baseUrl}/api/v1/verifications/`;
-  logger.info(`[PayProof] Uploading receipt image to ${uploadUrl} (field: images[], size: ${imageBuffer.length} bytes)...`);
+  logger.info(`[PayProof] Uploading receipt image to ${uploadUrl} (field: images[], size: ${uploadBuffer.length} bytes)...`);
 
   const response: AxiosResponse = await axios.post(uploadUrl, formData, {
     headers: {
