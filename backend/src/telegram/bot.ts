@@ -180,19 +180,12 @@ export function validateBotConfig(): string[] {
 
 // ── Helper: download Telegram file to a Buffer ───────────────────────────────
 
-const DOWNLOAD_MAX_ATTEMPTS = 3;
-const DOWNLOAD_RETRY_DELAY_MS = 1_500;
-
 // Persistent keep-alive agent for Telegram API file downloads
 const telegramDownloadAgent = new https.Agent({
   keepAlive: true,
   maxSockets: 30,
   keepAliveMsecs: 60_000,
 });
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Select the optimal photo size (~1000px - 1400px).
@@ -234,57 +227,78 @@ async function downloadTelegramFile(
   fileId: string
 ): Promise<{ buffer: Buffer; mime: string }> {
   const token = BOT_TOKEN();
-  let filePath: string | undefined;
+  const mimeOf = (p: string) => {
+    const e = p.split('.').pop()?.toLowerCase();
+    return e === 'pdf' ? 'application/pdf' : e === 'png' ? 'image/png' : e === 'webp' ? 'image/webp' : 'image/jpeg';
+  };
+  const fileUrl = (p: string) => `https://api.telegram.org/file/bot${token}/${p}`;
 
-  // Use the warm keep-alive TLS socket to api.telegram.org for getFile as well as download
-  try {
-    const infoResp = await axios.get<{ ok: boolean; result?: { file_path?: string } }>(
+  const viaAxios = async (agent: https.Agent | undefined, ms: number, label: string) => {
+    const t0 = Date.now();
+    const info = await axios.get<{ ok: boolean; result?: { file_path?: string } }>(
       `https://api.telegram.org/bot${token}/getFile`,
-      {
-        params: { file_id: fileId },
-        timeout: 10_000,
-        httpsAgent: telegramDownloadAgent,
-      }
+      { params: { file_id: fileId }, timeout: ms, httpsAgent: agent }
     );
-    filePath = infoResp.data?.result?.file_path;
-  } catch {
-    // Fallback to grammY getFile
-  }
+    const p: string | undefined = info.data?.result?.file_path;
+    if (!p) throw new Error('no file_path');
+    const t1 = Date.now();
+    const r = await axios.get<ArrayBuffer>(fileUrl(p), {
+      responseType: 'arraybuffer',
+      timeout: ms,
+      httpsAgent: agent,
+    });
+    logger.info(`[telegram-dl] ${label} getFile=${t1 - t0}ms file=${Date.now() - t1}ms`);
+    return { buffer: Buffer.from(r.data), mime: mimeOf(p) };
+  };
 
-  if (!filePath) {
-    const fileInfo = await bot.api.getFile(fileId);
-    filePath = fileInfo.file_path;
-  }
-  if (!filePath) throw new Error('Telegram did not return a file_path');
+  const viaGrammy = async (label: string) => {
+    const t0 = Date.now();
+    const f = await bot.api.getFile(fileId); // same client that sends replies
+    if (!f.file_path) throw new Error('no file_path');
+    const t1 = Date.now();
+    const r = await axios.get<ArrayBuffer>(fileUrl(f.file_path), {
+      responseType: 'arraybuffer',
+      timeout: 25_000, // default agent, no custom options
+    });
+    logger.info(`[telegram-dl] ${label} getFile=${t1 - t0}ms file=${Date.now() - t1}ms`);
+    return { buffer: Buffer.from(r.data), mime: mimeOf(f.file_path) };
+  };
 
-  const url = `https://api.telegram.org/file/bot${token}/${filePath}`;
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-  const mime =
-    ext === 'pdf'  ? 'application/pdf'  :
-    ext === 'png'  ? 'image/png'        :
-    ext === 'webp' ? 'image/webp'       :
-    'image/jpeg';
+  const attempts: Array<[number, () => Promise<{ buffer: Buffer; mime: string }>]> = [
+    [0,     () => viaAxios(telegramDownloadAgent, 4_000, 'pooled')],
+    [1_500, () => viaGrammy('grammy')],
+    [3_000, () => viaAxios(undefined, 25_000, 'patient')],
+  ];
 
-  let lastErr: Error = new Error('Unknown download error');
-
-  for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
-    try {
-      const resp = await axios.get<ArrayBuffer>(url, {
-        responseType: 'arraybuffer',
-        timeout: 20_000,
-        httpsAgent: telegramDownloadAgent,
-      });
-      const buffer = Buffer.from(resp.data);
-      return { buffer, mime };
-    } catch (err: any) {
-      lastErr = err;
-      logger.warn(`[telegram] File download attempt ${attempt}/${DOWNLOAD_MAX_ATTEMPTS} failed (${err.code ?? err.message})`);
-      if (attempt === DOWNLOAD_MAX_ATTEMPTS) break;
-      await sleep(DOWNLOAD_RETRY_DELAY_MS);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let failed = 0;
+    const timers: NodeJS.Timeout[] = [];
+    for (const [delay, fn] of attempts) {
+      timers.push(setTimeout(() => {
+        if (settled) return;
+        fn().then(
+          (r) => {
+            if (!settled) {
+              settled = true;
+              timers.forEach(clearTimeout);
+              resolve(r);
+            }
+          },
+          (err: any) => {
+            if (!settled) {
+              logger.warn(`[telegram] download attempt failed (${err.code ?? err.message})`);
+            }
+            if (++failed === attempts.length && !settled) {
+              settled = true;
+              timers.forEach(clearTimeout);
+              reject(err);
+            }
+          }
+        );
+      }, delay));
     }
-  }
-
-  throw lastErr;
+  });
 }
 
 async function sendTyping(ctx: Context): Promise<void> {
@@ -918,6 +932,7 @@ function getWebhookSecretToken(): string {
 let activeBot: Bot | null = null;
 let webhookRequestHandler: ((req: express.Request, res: express.Response) => Promise<void> | void) | null = null;
 let retryTimer: NodeJS.Timeout | null = null;
+let telegramWarmupTimer: NodeJS.Timeout | null = null;
 let isShuttingDown = false;
 
 function getOrCreateBot(): Bot {
@@ -932,6 +947,24 @@ function clearRetryTimer(): void {
     clearTimeout(retryTimer);
     retryTimer = null;
   }
+}
+
+function clearTelegramWarmupTimer(): void {
+  if (telegramWarmupTimer) {
+    clearInterval(telegramWarmupTimer);
+    telegramWarmupTimer = null;
+  }
+}
+
+function startTelegramWarmupTimer(): void {
+  clearTelegramWarmupTimer();
+  telegramWarmupTimer = setInterval(() => {
+    axios.get(`https://api.telegram.org/bot${BOT_TOKEN()}/getMe`, {
+      httpsAgent: telegramDownloadAgent,
+      timeout: 5_000,
+    }).catch(() => {});
+  }, 25_000);
+  telegramWarmupTimer.unref?.();
 }
 
 function scheduleBotRetry(nextAttempt: number, delayMs: number): void {
@@ -963,7 +996,7 @@ export function getTelegramWebhookMiddleware(): express.RequestHandler {
       const bot = getOrCreateBot();
       webhookRequestHandler = webhookCallback(bot, 'express', {
         onTimeout: 'return',
-        timeoutMilliseconds: 25_000,
+        timeoutMilliseconds: 45_000,
         secretToken: getWebhookSecretToken(),
       });
     }
@@ -989,6 +1022,9 @@ async function runBotLoop(attempt = 1): Promise<void> {
         secret_token: getWebhookSecretToken(),
         drop_pending_updates: false,
       });
+
+      // Keep the pooled HTTPS connection to api.telegram.org warm so Render does not drop idle sockets
+      startTelegramWarmupTimer();
 
       logger.info(`[telegram] ✅ Bot @${_botUsername ?? 'bot'} webhook active → ${webhookUrl} (Multi-tenant mode)`);
       return;
@@ -1063,6 +1099,7 @@ async function runBotLoop(attempt = 1): Promise<void> {
 export async function stopBot(): Promise<void> {
   isShuttingDown = true;
   clearRetryTimer();
+  clearTelegramWarmupTimer();
 
   const bot = activeBot;
   if (bot && bot.isRunning()) {
