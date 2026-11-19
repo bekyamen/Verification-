@@ -758,7 +758,7 @@ function renderRecentTransactions(items) {
       </div>
       <div class="vp-tx-right">
         <div class="vp-tx-amt">ETB ${formatEtbAmount(tx.amount)}</div>
-        <div class="vp-tx-ref">${escHtml(tx.txnReference || '—')}</div>
+        <div class="vp-tx-ref">${escHtml(tx.txnReference || tx.reference || '—')}</div>
         <div class="vp-tx-date">${escHtml(dateText)}</div>
         ${agoText ? `<div class="vp-tx-ago">${escHtml(agoText)}</div>` : ''}
       </div>
@@ -773,7 +773,7 @@ let _hasLoadedHistory = false;
 function upsertRecentVerificationInstant(result) {
   if (!result || !result.status) return;
   const prov = String(result.provider || '').toUpperCase();
-  const ref = result.txnReference ? String(result.txnReference) : '';
+  const ref = (result.txnReference || result.reference) ? String(result.txnReference || result.reference) : '';
   // Skip purely unreadable failed OCR without reference/provider, OR record valid/duplicate/mismatch/failed checks with ref
   if (!ref && result.status !== 'VERIFIED') return;
 
@@ -999,10 +999,11 @@ function renderVerifyResult(result) {
       <strong style="color:${borderCol};font-size:16px">${formattedAmount} ETB</strong>
     </div>`;
   }
-  if (result.txnReference) {
+  const refVal = result.txnReference || result.reference;
+  if (refVal) {
     html += `<div style="display:flex;justify-content:space-between">
       <span style="color:var(--hint)">Reference:</span>
-      <code>${escHtml(result.txnReference)}</code>
+      <code>${escHtml(refVal)}</code>
     </div>`;
   }
   if (result.payerName) {

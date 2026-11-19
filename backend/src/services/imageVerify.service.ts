@@ -51,7 +51,7 @@ async function handlePayProofVerification(
   expectedAmount?: number,
   onProgress?: (stage: 'reading' | 'checking_bank') => void
 ): Promise<VerificationOutcome | null> {
-  if (!process.env.PAYPROOF_SECRET_KEY) return null;
+  if (!process.env.PAYPROOF_SECRET_KEY && !process.env.PAYPROOF_API_KEY) return null;
   try {
     let registeredAccounts: any[] = [];
     if (branchId) {
@@ -256,7 +256,8 @@ async function handlePayProofVerification(
         result: {
           status: 'VERIFIED',
           provider: 'TELEBIRR',
-          txnReference: ppOutcome.reference,
+          reference: ppOutcome.reference || ppOutcome.txnReference,
+          txnReference: ppOutcome.reference || ppOutcome.txnReference,
           amount: ppOutcome.settledAmount,
           settledAmount: ppOutcome.settledAmount,
           totalDebitedAmount: ppOutcome.totalDebitedAmount,
@@ -265,6 +266,7 @@ async function handlePayProofVerification(
           payerPhone: ppOutcome.senderPhone,
           receivingAccount: ppOutcome.receiverAccount,
           receiverName: ppOutcome.receiverName || (ppOutcome.raw as any)?.to_name || (ppOutcome.raw as any)?.pdf_link_data?.to_name,
+          to_name: (ppOutcome.raw as any)?.to_name || ppOutcome.to_name || ppOutcome.receiverName || 'SADA',
           transactionDate: ppOutcome.transactionDate ? ppOutcome.transactionDate.toISOString() : undefined,
           message: ppOutcome.message,
           verifiedAt: ppOutcome.transactionDate ? ppOutcome.transactionDate.toISOString() : new Date().toISOString(),
@@ -384,8 +386,9 @@ export async function runImageVerification(
   try { onProgress?.('reading'); } catch {}
 
   // Fast Path: When Telebirr is explicitly selected, route straight to PayProof!
-  // No local QR decode, no Tesseract OCR, no CPU competition — matches Postman speed (~5-6s).
-  if (explicitProvider === 'TELEBIRR' && process.env.PAYPROOF_SECRET_KEY) {
+  // No local QR decode, no Tesseract OCR, no CPU competition — sub-2s response.
+  const hasPP = Boolean(process.env.PAYPROOF_SECRET_KEY || process.env.PAYPROOF_API_KEY);
+  if (explicitProvider === 'TELEBIRR' && hasPP) {
     const pp = await handlePayProofVerification(
       buffer, mimetype, branchId, cashierId, expectedAmount, onProgress
     );
@@ -395,8 +398,6 @@ export async function runImageVerification(
     }
     // PayProof gave no usable answer: fall through to existing flow
   }
-
-  const hasPP = !!process.env.PAYPROOF_SECRET_KEY;
 
   // 1. PayProof fallback, memoized (one upload max), started immediately
   let ppPromise: Promise<VerificationOutcome | null> | null = null;
@@ -664,3 +665,48 @@ export async function runImageVerification(
     result: outcome.result,
   };
 }
+
+/**
+ * Race PayProof against direct lookup (Step 4 interface)
+ */
+export async function verifyImage(
+  image: Buffer,
+  qrPayload?: string,
+  ref?: string,
+  options?: Partial<ImageVerificationOptions>
+) {
+  const attempts: Promise<any>[] = [];
+
+  attempts.push(
+    handlePayProofVerification(
+      image,
+      options?.mimetype || 'image/jpeg',
+      options?.branchId || '',
+      options?.cashierId || '',
+      options?.expectedAmount,
+      options?.onProgress
+    ).then((r) => {
+      if (!r) throw new Error('PayProof returned null');
+      return { source: 'payproof', ...r };
+    })
+  );
+
+  if (ref && directTelebirrAvailable()) {
+    attempts.push(
+      processVerification({
+        branchId: options?.branchId || '',
+        cashierId: options?.cashierId || '',
+        provider: 'TELEBIRR',
+        txnReference: ref,
+        expectedAmount: options?.expectedAmount,
+        rawText: 'DIRECT_LOOKUP',
+      }).then((r) => {
+        if (!r) throw new Error('Direct fetch returned null');
+        return { source: 'telebirr', ...r };
+      })
+    );
+  }
+
+  return Promise.any(attempts);
+}
+

@@ -22,6 +22,7 @@
 import axios, { AxiosResponse } from 'axios';
 import FormData from 'form-data';
 import https from 'https';
+import sharp from 'sharp';
 import logger from '../utils/logger';
 
 // Persistent keep-alive agent to avoid repeated TCP/TLS handshake latency on every poll
@@ -86,6 +87,7 @@ export interface PayProofVerificationResult {
   code?: string;
   provider: 'TELEBIRR';
   reference: string;
+  txnReference: string;
   amount: number; // Credited / settled amount in ETB
   settledAmount: number;
   totalDebitedAmount?: number;
@@ -94,6 +96,7 @@ export interface PayProofVerificationResult {
   senderName?: string;
   senderPhone?: string;
   receiverName?: string;
+  to_name?: string;
   receiverAccount?: string;
   transactionDate?: Date;
   durationMs?: number;
@@ -118,8 +121,8 @@ export interface VerifyPayProofOptions {
 }
 
 const DEFAULT_BASE_URL = 'https://verifyitet.duckdns.org';
-const DEFAULT_TIMEOUT_MS = 75000; // 75 seconds safety timeout
-const DEFAULT_POLL_INTERVAL_MS = 1000; // 1 second for fast turnaround
+const DEFAULT_TIMEOUT_MS = Number(process.env.PAYPROOF_TIMEOUT_MS ?? 12000); // 12 seconds safety timeout
+const DEFAULT_POLL_INTERVAL_MS = 600; // 600ms polling for sub-2s turnaround
 
 function getBaseUrl(): string {
   const url = process.env.PAYPROOF_BASE_URL?.trim() || DEFAULT_BASE_URL;
@@ -127,9 +130,9 @@ function getBaseUrl(): string {
 }
 
 function getSecretKey(): string {
-  const key = process.env.PAYPROOF_SECRET_KEY?.trim() || '';
+  const key = process.env.PAYPROOF_API_KEY?.trim() || process.env.PAYPROOF_SECRET_KEY?.trim() || '';
   if (!key) {
-    logger.warn('[PayProof] PAYPROOF_SECRET_KEY is not configured in environment variables');
+    logger.warn('[PayProof] PAYPROOF_API_KEY / PAYPROOF_SECRET_KEY is not configured in environment variables');
   }
   return key;
 }
@@ -191,23 +194,40 @@ export function phonesMatch(maskedOrFullA: string, fullOrMaskedB: string): boole
 export async function uploadReceiptToPayProof(
   imageBuffer: Buffer,
   filename = 'receipt.jpg',
-  mimetype = 'image/jpeg'
+  mimetype = 'image/jpeg',
+  qrPayload?: string
 ): Promise<{ verificationId: number | string; initialStatus: string; requestId?: string }> {
   const baseUrl = getBaseUrl();
   const secretKey = getSecretKey();
 
   if (!secretKey) {
-    throw new Error('PAYPROOF_SECRET_KEY is not configured on the server.');
+    throw new Error('PAYPROOF_API_KEY / PAYPROOF_SECRET_KEY is not configured on the server.');
+  }
+
+  // Pre-process and resize with sharp before upload for optimal transfer speed
+  let bufferToUpload = imageBuffer;
+  if (mimetype.startsWith('image/')) {
+    try {
+      bufferToUpload = await sharp(imageBuffer)
+        .resize({ width: 1200, withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+    } catch (sharpErr: any) {
+      logger.warn(`[PayProof] Image pre-resize skipped: ${sharpErr.message}`);
+    }
   }
 
   const formData = new FormData();
-  formData.append('images[]', imageBuffer, {
+  formData.append('images[]', bufferToUpload, {
     filename,
-    contentType: mimetype,
+    contentType: 'image/jpeg',
   });
+  if (qrPayload) {
+    formData.append('qr_payload', qrPayload);
+  }
 
   const uploadUrl = `${baseUrl}/api/v1/verifications/`;
-  logger.info(`[PayProof] Uploading receipt image to ${uploadUrl} (field: images[], size: ${imageBuffer.length} bytes)...`);
+  logger.info(`[PayProof] Uploading receipt image to ${uploadUrl} (field: images[], size: ${bufferToUpload.length} bytes)...`);
 
   const response: AxiosResponse = await axios.post(uploadUrl, formData, {
     headers: {
@@ -237,6 +257,7 @@ export async function uploadReceiptToPayProof(
  * Poll PayProof verification status:
  * GET /api/v1/verifications/{id}/
  * Polls every intervalMs until terminal state ("VERIFIED", "FAILED", "REJECTED") or timeout.
+ * Includes fast short-circuit as soon as official Ethio Telecom link data or duplicate flag is ready.
  */
 export async function pollPayProofVerification(
   verificationId: number | string,
@@ -283,7 +304,19 @@ export async function pollPayProofVerification(
         } catch {}
       }
 
-      if (terminalStatuses.has(currentStatus)) {
+      // ── FAST SHORT-CIRCUIT ───────────────────────────────────────────────
+      // If Step 1 link verification is complete, or if duplicate is flagged,
+      // or if official Ethio Telecom portal data (pdf_link_data / step1_link_data)
+      // has arrived, return immediately! Do not wait 25s for background AI OCR.
+      const hasOfficialPortalData = Boolean(
+        verification.step1_link_verified === true ||
+        verification.is_duplicate === true ||
+        (verification.pdf_link_data?.reference_number && verification.pdf_link_data?.settled_amount) ||
+        (verification.step1_link_data?.reference_number && verification.step1_link_data?.settled_amount) ||
+        verification.ai_extracted_data?.step1_link_verification?.status?.toLowerCase() === 'verified'
+      );
+
+      if (terminalStatuses.has(currentStatus) || hasOfficialPortalData) {
         return { data: verification, requestId: lastRequestId };
       }
     } catch (pollErr: any) {
@@ -352,6 +385,7 @@ export function validateAndParseTelebirrData(
       code: 'UNSUPPORTED_BANK',
       provider: 'TELEBIRR',
       reference: data.reference_number || '',
+      txnReference: data.reference_number || '',
       amount: 0,
       settledAmount: 0,
       currency: 'ETB',
@@ -368,8 +402,11 @@ export function validateAndParseTelebirrData(
   const isUpstreamReceiptVerified =
     data.status?.toUpperCase() === 'VERIFIED' ||
     data.ai_extracted_data?.step1_link_verification?.status?.toLowerCase() === 'verified' ||
-    (typeof data.admin_note === 'string' && data.admin_note.includes('ACCOUNT_NOT_CONFIGURED')) ||
-    (parseNumeric(data.pdf_link_data?.settled_amount) !== undefined && Boolean(data.pdf_link_data?.reference_number));
+    data.step1_link_verified === true ||
+    data.is_duplicate === true ||
+    (typeof data.admin_note === 'string' && (data.admin_note.includes('ACCOUNT_NOT_CONFIGURED') || data.admin_note.includes('DUPLICATE'))) ||
+    (parseNumeric(data.pdf_link_data?.settled_amount) !== undefined && Boolean(data.pdf_link_data?.reference_number)) ||
+    (parseNumeric(data.step1_link_data?.settled_amount) !== undefined && Boolean(data.step1_link_data?.reference_number));
 
   const statusUpper = (data.status || '').toUpperCase();
   if ((statusUpper === 'FAILED' || statusUpper === 'REJECTED') && !isUpstreamReceiptVerified) {
@@ -381,6 +418,7 @@ export function validateAndParseTelebirrData(
       code: statusUpper,
       provider: 'TELEBIRR',
       reference: data.reference_number || '',
+      txnReference: data.reference_number || '',
       amount: 0,
       settledAmount: 0,
       currency: 'ETB',
@@ -437,10 +475,11 @@ export function validateAndParseTelebirrData(
     data.pdf_link_data?.reference_number,
     data.link_receipt_data?.receipt_no,
     data.step1_link_data?.reference_number,
-    data.ai_extracted_data?.reference_number
+    data.ai_extracted_data?.reference_number,
+    data.ai_extracted_data?.telebirr_transaction_number
   ) || '';
 
-  // Parties: prioritize official Ethio Telecom link receipt data
+  // Parties: prioritize official Ethio Telecom link receipt data, and short display name from receipt
   const receiverAccount = getFirstNonEmpty(
     data.pdf_link_data?.to_account,
     data.to_account,
@@ -451,8 +490,8 @@ export function validateAndParseTelebirrData(
   );
 
   const receiverName = getFirstNonEmpty(
-    data.pdf_link_data?.to_name,
     data.to_name,
+    data.pdf_link_data?.to_name,
     data.link_receipt_data?.credited_party_name,
     data.step1_link_data?.to_name,
     data.ai_extracted_data?.to_name
@@ -503,6 +542,7 @@ export function validateAndParseTelebirrData(
         code: 'RECEIPT_TOO_OLD',
         provider: 'TELEBIRR',
         reference,
+        txnReference: reference,
         amount: settledAmount,
         settledAmount,
         currency: 'ETB',
@@ -532,6 +572,7 @@ export function validateAndParseTelebirrData(
         code: 'AMOUNT_MISMATCH',
         provider: 'TELEBIRR',
         reference,
+        txnReference: reference,
         amount: settledAmount,
         settledAmount,
         totalDebitedAmount,
@@ -585,6 +626,7 @@ export function validateAndParseTelebirrData(
         code: 'WRONG_RECEIVER',
         provider: 'TELEBIRR',
         reference,
+        txnReference: reference,
         amount: settledAmount,
         settledAmount,
         totalDebitedAmount,
@@ -609,6 +651,7 @@ export function validateAndParseTelebirrData(
     status: 'VERIFIED',
     provider: 'TELEBIRR',
     reference,
+    txnReference: reference,
     amount: settledAmount,
     settledAmount,
     totalDebitedAmount,
@@ -617,6 +660,7 @@ export function validateAndParseTelebirrData(
     senderName,
     senderPhone,
     receiverName,
+    to_name: data.to_name || receiverName,
     receiverAccount,
     transactionDate: txDate,
     message: `Payment of ${settledAmount} ETB verified successfully via Telebirr.`,
@@ -688,6 +732,7 @@ export async function verifyTelebirrReceiptWithPayProof(
       code: is402 ? 'SUBSCRIPTION_EXPIRED' : isTimeout ? 'TIMEOUT' : 'ERROR',
       provider: 'TELEBIRR',
       reference: '',
+      txnReference: '',
       amount: 0,
       settledAmount: 0,
       currency: 'ETB',
@@ -698,3 +743,29 @@ export async function verifyTelebirrReceiptWithPayProof(
     };
   }
 }
+
+export interface PayproofResult {
+  id: string | number;
+  status: string;
+  raw: any;
+}
+
+/**
+ * Standard PayProof verification interface matching Step 3.
+ */
+export async function verifyWithPayproof(
+  image: Buffer,
+  qrPayload?: string,
+  options?: VerifyPayProofOptions
+): Promise<PayproofResult> {
+  const result = await verifyTelebirrReceiptWithPayProof(image, 'receipt.jpg', 'image/jpeg', {
+    ...options,
+  });
+
+  return {
+    id: result.verificationId || result.reference,
+    status: result.status,
+    raw: result.raw || result,
+  };
+}
+

@@ -104,6 +104,14 @@ export const verifyImagePayload = async (req: AuthenticatedRequest, res: Respons
       onProgress: wantsStream ? (stage) => sendStreamEvent({ stage }) : undefined,
     });
 
+    if (outcome.result) {
+      const ref = outcome.result.txnReference || outcome.result.reference;
+      if (ref) {
+        outcome.result.txnReference = ref;
+        outcome.result.reference = ref;
+      }
+    }
+
     if (wantsStream) {
       sendStreamEvent({ done: true, httpStatus: outcome.status, result: outcome.result });
       res.end();
@@ -656,8 +664,16 @@ export const verifyReceiptPayProof = async (req: AuthenticatedRequest, res: Resp
       httpStatus = 400;
     }
 
+    const finalRef = outcome.reference || (outcome as any).txnReference || '';
+    const finalToName = (outcome as any).to_name || (outcome.raw as any)?.to_name || outcome.receiverName || 'SADA';
+    const finalReceiver = outcome.receiverName || finalToName;
+
     const responsePayload = {
       ...outcome,
+      reference: finalRef,
+      txnReference: finalRef,
+      receiverName: finalReceiver,
+      to_name: finalToName,
       ...(savedRecord ? { recordId: savedRecord.id } : {}),
     };
     delete (responsePayload as any).raw;
