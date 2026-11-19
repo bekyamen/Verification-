@@ -207,11 +207,59 @@ async function handlePayProofVerification(
           message: ppOutcome.message,
         },
       };
+    } else if (ppOutcome.code === 'SUBSCRIPTION_EXPIRED') {
+      return {
+        status: 402,
+        result: {
+          status: 'FAILED_UPSTREAM',
+          code: 'SUBSCRIPTION_EXPIRED',
+          provider: 'TELEBIRR',
+          txnReference: ppOutcome.reference || null,
+          message: ppOutcome.message,
+        },
+      };
     }
   } catch (err: any) {
     logger.warn(`[image-verify] PayProof execution error: ${err.message}`);
   }
   return null;
+}
+
+// ── Helper: First promise that fulfills with an acceptable value ──────────────
+function firstUsable<T>(ps: Promise<T | null>[], ok: (v: T) => boolean): Promise<T | null> {
+  return new Promise((resolve) => {
+    let pending = ps.length;
+    if (pending === 0) return resolve(null);
+    const fail = () => {
+      if (--pending === 0) resolve(null);
+    };
+    ps.forEach((p) =>
+      p
+        .then((v) => (v && ok(v) ? resolve(v) : fail()))
+        .catch(fail)
+    );
+  });
+}
+
+// ── Circuit Breaker for direct Ethio Telecom portal fetching ──────────────────
+let telebirrDirectNetFailures = 0;
+let telebirrDirectPausedUntil = 0;
+
+export function recordDirectTelebirrFailure(): void {
+  if (++telebirrDirectNetFailures >= 3) {
+    telebirrDirectPausedUntil = Date.now() + 5 * 60_000;
+    telebirrDirectNetFailures = 0;
+    logger.warn('[Telebirr] Direct portal unreachable 3x in a row — pausing direct fetch for 5 minutes');
+  }
+}
+
+export function recordDirectTelebirrSuccess(): void {
+  telebirrDirectNetFailures = 0;
+}
+
+export function directTelebirrAvailable(): boolean {
+  if (process.env.TELEBIRR_DIRECT_ENABLED === 'false') return false;
+  return Date.now() >= telebirrDirectPausedUntil;
 }
 
 export async function runImageVerification(
@@ -221,20 +269,85 @@ export async function runImageVerification(
   const t0 = Date.now();
   try { onProgress?.('reading'); } catch {}
 
-  // ── Step 1: Start OCR immediately so it overlaps with QR decode ─────────────
-  let ocrDoneMs = -1;
-  const ocrPromise = parseFileBuffer(buffer, mimetype)
-    .then((r) => {
-      ocrDoneMs = Date.now() - t0;
-      return r;
-    })
-    .catch(() => {
-      ocrDoneMs = Date.now() - t0;
-      return null;
-    });
+  const hasPP = !!process.env.PAYPROOF_SECRET_KEY;
 
-  // ── Step 2: Decode QR on the main thread ────────────────────────────────────
-  const qrValue = await decodeReceiptQr(buffer, mimetype);
+  // 1. PayProof fallback, memoized (one upload max), started immediately
+  let ppPromise: Promise<VerificationOutcome | null> | null = null;
+  const runPayProof = () =>
+    (ppPromise ??= handlePayProofVerification(buffer, mimetype, branchId, cashierId, expectedAmount, onProgress)
+      .catch(() => null));
+  if (hasPP && (!explicitProvider || explicitProvider === 'TELEBIRR')) {
+    runPayProof();
+  }
+
+  // 2. QR and OCR run in parallel, QR time-boxed to 1200ms
+  const ocrPromise = parseFileBuffer(buffer, mimetype).catch(() => null);
+  const fullQrPromise = decodeReceiptQr(buffer, mimetype).catch(() => null);
+  const qrPromise = Promise.race([
+    fullQrPromise,
+    new Promise<null>((r) => setTimeout(() => r(null), 1200)),
+  ]);
+
+  // 3. First Telebirr reference wins
+  const refFromQr = qrPromise.then((q) => {
+    if (!q) return null;
+    const n = dissectPayload(q);
+    if (n.provider === 'TELEBIRR' && n.txnReference) return n.txnReference;
+    const m = q.match(/receipt\/([A-Z0-9]{8,12})/i) || q.match(/\b(?=[A-Z0-9]*\d)([A-Z]{2,3}[A-Z0-9]{6,8})\b/i);
+    return m ? m[1].toUpperCase() : null;
+  });
+
+  const refFromOcr = ocrPromise.then((o) => {
+    if (!o) return null;
+    if (o.provider === 'TELEBIRR' || /TELEBIRR|ETHIO TELECOM/i.test(o.rawText || '')) {
+      if (o.txnReference) return o.txnReference;
+      const m = (o.rawText || '').match(/\b(?=[A-Z0-9]*\d)([A-Z]{2,3}[A-Z0-9]{6,8})\b/i);
+      return m ? m[1].toUpperCase() : null;
+    }
+    return null;
+  });
+
+  const ref = await firstUsable<string>([refFromQr, refFromOcr], (v) => !!v);
+
+  // 4. Direct portal lookup raced against PayProof
+  if (ref && directTelebirrAvailable()) {
+    try { onProgress?.('checking_bank'); } catch {}
+    const direct: Promise<VerificationOutcome | null> = Promise.race([
+      processVerification({
+        branchId,
+        cashierId,
+        provider: 'TELEBIRR',
+        txnReference: ref,
+        expectedAmount,
+        rawText: 'DIRECT_LOOKUP', // no receiptImageUrl on purpose
+      }),
+      new Promise<null>((r) => setTimeout(() => r(null), 3500)),
+    ])
+      .then((o: any) => {
+        if (o && o.status !== 502 && o.result?.status !== 'FAILED_UPSTREAM') {
+          recordDirectTelebirrSuccess();
+          return { status: o.status, result: o.result };
+        }
+        recordDirectTelebirrFailure();
+        return null;
+      })
+      .catch(() => {
+        recordDirectTelebirrFailure();
+        return null;
+      });
+
+    const winner = await firstUsable<VerificationOutcome>(
+      [direct, ...(hasPP ? [runPayProof()] : [])],
+      (v) => !!v
+    );
+    if (winner) {
+      logger.info(`[perf] path=direct-or-pp ref=${ref} status=${winner.result?.status} total=${Date.now() - t0}ms`);
+      return winner;
+    }
+  }
+
+  // 5. No Telebirr ref found or direct+PayProof didn't resolve: CBE / OCR logic
+  const qrValue = await fullQrPromise;
   const qrMs = Date.now() - t0;
 
   const qrIsReceiptUrl = !!qrValue && parseReceiptLink(qrValue) !== null;
@@ -247,27 +360,9 @@ export async function runImageVerification(
 
   const qrNormalized = qrValue ? dissectPayload(qrValue) : null;
   const qrHasUsableRef = !!(qrNormalized && qrNormalized.txnReference && qrNormalized.provider !== 'UNKNOWN');
-  const isTelebirrFromQr = !!(
-    qrNormalized?.provider === 'TELEBIRR' ||
-    (qrValue && /transactioninfo\.ethiotelecom\.et|telebirr/i.test(qrValue)) ||
-    (qrValue && /DKC[A-Z0-9]{7}/i.test(qrValue))
-  );
 
-  // ── Step 3: Fast-path — Direct routing to PayProof for Telebirr ─────────────
-  // If Telebirr is detected via QR or explicit provider, route directly to PayProof!
-  // NEVER wait 15 seconds for direct Ethio Telecom scraping to time out.
-  if ((isTelebirrFromQr || explicitProvider === 'TELEBIRR') && process.env.PAYPROOF_SECRET_KEY) {
-    logger.info(`[image-verify] Fast-path Telebirr detected (qr=${isTelebirrFromQr}, explicit=${explicitProvider}) — routing directly to PayProof...`);
-    const ppResult = await handlePayProofVerification(buffer, mimetype, branchId, cashierId, expectedAmount, onProgress);
-    if (ppResult) {
-      const totalMs = Date.now() - t0;
-      logger.info(`[perf] Telebirr verified via PayProof fast-path in total=${totalMs}ms`);
-      return ppResult;
-    }
-  }
-
-  // ── Step 4: Fast-path for CBE QR receipts ──────────────────────────────────
-  if (qrHasUsableRef && !isDoomedCbeToken && !isTelebirrFromQr) {
+  // Step 5a: Fast-path for CBE QR receipts
+  if (qrHasUsableRef && !isDoomedCbeToken && qrNormalized?.provider !== 'TELEBIRR') {
     try { onProgress?.('checking_bank'); } catch {}
     const qrProvider = (qrNormalized!.provider === 'UNKNOWN' ? explicitProvider : qrNormalized!.provider) || 'UNKNOWN';
     const outcome = await processVerification({
@@ -303,35 +398,27 @@ export async function runImageVerification(
     }
   }
 
-  // ── Step 5: Parallel PayProof background task if QR was not CBE ─────────────
-  // While local Tesseract OCR runs, also run PayProof in background so whichever finishes first wins
-  let payProofPromise: Promise<VerificationOutcome | null> | null = null;
-  if (!qrIsCbeToken && !isDoomedCbeToken && process.env.PAYPROOF_SECRET_KEY) {
-    payProofPromise = handlePayProofVerification(buffer, mimetype, branchId, cashierId, expectedAmount, onProgress).catch(() => null);
-  }
-
-  // ── Step 6: Wait for OCR ────────────────────────────────────────────────────
+  // Step 5b: Wait for OCR
   const ocrResult = await ocrPromise;
-  const ocrMs = ocrDoneMs > 0 ? ocrDoneMs : (Date.now() - t0);
+  const ocrMs = Date.now() - t0;
   const ocrText = ocrResult?.rawText || '';
 
   // Determine provider
   let detectedProvider = explicitProvider || ocrResult?.provider || 'UNKNOWN';
   if (detectedProvider === 'UNKNOWN') {
-    if (/CBE|COMMERCIAL BANK|FT[A-Z0-9]/i.test(ocrText)) {
+    if (/CBE|COMMERCIAL BANK|\bFT[A-Z0-9]{8,14}\b/i.test(ocrText)) {
       detectedProvider = 'CBE';
     } else if (/TELEBIRR|ETHIO TELECOM/i.test(ocrText)) {
       detectedProvider = 'TELEBIRR';
     }
   }
 
-  // If OCR indicates Telebirr or text mentions Telebirr, await PayProof directly!
-  if ((detectedProvider === 'TELEBIRR' || /TELEBIRR|ETHIO TELECOM/i.test(ocrText)) && payProofPromise) {
-    logger.info('[image-verify] OCR detected Telebirr — awaiting PayProof directly (skipping slow direct scrape)...');
-    const ppResult = await payProofPromise;
+  // If OCR indicates Telebirr, await PayProof fallback
+  if (detectedProvider === 'TELEBIRR' && hasPP) {
+    logger.info('[image-verify] OCR detected Telebirr — awaiting PayProof fallback...');
+    const ppResult = await runPayProof();
     if (ppResult) {
-      const totalMs = Date.now() - t0;
-      logger.info(`[perf] Telebirr verified via PayProof post-OCR in total=${totalMs}ms`);
+      logger.info(`[perf] Telebirr verified via PayProof post-OCR in total=${Date.now() - t0}ms`);
       return ppResult;
     }
   }
@@ -339,7 +426,6 @@ export async function runImageVerification(
   // Extract reference
   let txnReference: string | null = null;
   if (detectedProvider === 'CBE') {
-    // For CBE, extract FT reference from OCR text
     const ftMatch = ocrText.match(/\b(FT[A-Z0-9]{8,14})\b/i) ?? ocrText.match(/(FT[A-Z0-9]{10})/i);
     if (ftMatch) {
       txnReference = ftMatch[1].toUpperCase();
@@ -360,18 +446,16 @@ export async function runImageVerification(
     }
   }
 
-  // Check if PayProof finished in the background while parsing text
-  if (payProofPromise && (!detectedProvider || detectedProvider === 'TELEBIRR' || detectedProvider === 'UNKNOWN')) {
-    const ppResult = await payProofPromise;
-    if (ppResult && ppResult.status === 200 && ppResult.result?.status === 'VERIFIED') {
-      const totalMs = Date.now() - t0;
-      logger.info(`[perf] Telebirr verified via background PayProof in total=${totalMs}ms`);
-      return ppResult;
-    }
-  }
-
-  // ── Step 7: Unreadable receipt handling ──────────────────────────────────────
+  // Unreadable receipt handling
   if (!txnReference || detectedProvider === 'UNKNOWN') {
+    // If PayProof was running in background, check its result
+    if (hasPP && (!explicitProvider || explicitProvider === 'TELEBIRR')) {
+      const ppResult = await runPayProof();
+      if (ppResult && (ppResult.status === 200 || ppResult.status === 400 || ppResult.status === 402)) {
+        return ppResult;
+      }
+    }
+
     const totalMs = Date.now() - t0;
     logger.warn(
       `[perf] qr=${qrMs}ms ocr=${ocrMs}ms db=0ms bank=0ms total=${totalMs}ms status=INVALID_RECEIPT ref=none`
@@ -387,16 +471,10 @@ export async function runImageVerification(
     };
   }
 
-  // ── Step 8: Single verification call on OCR path (CBE and others) ────────────
+  // Final verification call (CBE or fallback)
   try { onProgress?.('checking_bank'); } catch {}
   const combinedRawText = [qrValue, ocrText].filter(Boolean).join('\n');
   const normalized = dissectPayload(combinedRawText);
-
-  // If Telebirr reached here, use PayProof if configured
-  if (detectedProvider === 'TELEBIRR' && process.env.PAYPROOF_SECRET_KEY) {
-    const ppResult = await handlePayProofVerification(buffer, mimetype, branchId, cashierId, expectedAmount, onProgress);
-    if (ppResult) return ppResult;
-  }
 
   const outcome = await processVerification({
     branchId,
@@ -414,15 +492,14 @@ export async function runImageVerification(
     receiptImageUrl: 'UPLOADED_FILE_PROOF',
   });
 
-  // If Telebirr failed due to upstream network block (e.g. Safaricom/Render IP block)
-  // and PayProof is configured, failover to PayProof
+  // If Telebirr direct verification was unreachable and PayProof is available, failover to PayProof
   if (
     detectedProvider === 'TELEBIRR' &&
     (outcome.status === 502 || outcome.result?.status === 'FAILED_UPSTREAM') &&
-    process.env.PAYPROOF_SECRET_KEY
+    hasPP
   ) {
     logger.info('[image-verify] Telebirr direct verification unreachable — failing over to PayProof API...');
-    const ppResult = await handlePayProofVerification(buffer, mimetype, branchId, cashierId, expectedAmount, onProgress);
+    const ppResult = await runPayProof();
     if (ppResult) return ppResult;
   }
 

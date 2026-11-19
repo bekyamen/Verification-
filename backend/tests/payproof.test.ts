@@ -83,12 +83,34 @@ describe('PayProof Telebirr Verification Service', () => {
         },
       };
 
-      const result = validateAndParseTelebirrData(telebirrData);
+      const result = validateAndParseTelebirrData(telebirrData, { maxAgeHours: 2000 });
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.verified, true);
       assert.strictEqual(result.status, 'VERIFIED');
       assert.strictEqual(result.provider, 'TELEBIRR');
       assert.strictEqual(result.reference, 'DJ88KMM4K0');
+    });
+
+    it('strictly rejects receipts older than max allowed age with RECEIPT_TOO_OLD', () => {
+      const oldData: PayProofVerificationData = {
+        id: 104,
+        status: 'VERIFIED',
+        bank_name: 'TELEBIRR',
+        reference_number: 'DJ88KMM4K0',
+        amount: 11.0,
+        transaction_date: '2026-01-01T12:00:00Z',
+        pdf_link_data: {
+          settled_amount: 10.0,
+          date: '01-01-2026 15:00:00',
+        },
+      };
+
+      const result = validateAndParseTelebirrData(oldData, { maxAgeHours: 24 });
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.verified, false);
+      assert.strictEqual(result.status, 'INVALID_RECEIPT');
+      assert.strictEqual(result.code, 'RECEIPT_TOO_OLD');
+      assert.match(result.message || '', /older than 24 hours/i);
     });
   });
 
@@ -257,6 +279,7 @@ describe('PayProof Telebirr Verification Service', () => {
       const result = validateAndParseTelebirrData(userPayload, {
         expectedAmount: 10.0,
         registeredAccounts: userRegisteredAccounts,
+        maxAgeHours: 2000,
       });
 
       assert.strictEqual(result.success, true);
@@ -361,6 +384,29 @@ describe('PayProof Telebirr Verification Service', () => {
       } finally {
         (axios as any).post = originalPost;
         (axios as any).get = originalGet;
+      }
+    });
+
+    it('returns clear SUBSCRIPTION_EXPIRED error when PayProof responds with HTTP 402', async () => {
+      process.env.PAYPROOF_SECRET_KEY = 'sk_live_test_dummy_key';
+      process.env.PAYPROOF_BASE_URL = 'https://verifyitet.duckdns.org';
+
+      const originalPost = axios.post;
+      (axios as any).post = async () => {
+        const err: any = new Error('Request failed with status code 402');
+        err.response = { status: 402, data: { detail: 'Payment Required' } };
+        throw err;
+      };
+
+      try {
+        const dummyBuffer = Buffer.from('fake-data');
+        const res = await verifyTelebirrReceiptWithPayProof(dummyBuffer, 'receipt.jpg', 'image/jpeg');
+        assert.strictEqual(res.success, false);
+        assert.strictEqual(res.status, 'FAILED_UPSTREAM');
+        assert.strictEqual(res.code, 'SUBSCRIPTION_EXPIRED');
+        assert.match(res.message || '', /subscription/i);
+      } finally {
+        (axios as any).post = originalPost;
       }
     });
   });

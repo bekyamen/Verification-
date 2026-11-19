@@ -222,10 +222,14 @@ export const processVerification = async (options: VerificationRequest): Promise
     const matchedReceiver = providerResult.receiverAccount || expectedReceiverAccount || null;
 
     const tTx0 = Date.now();
-    // Re-use priorRecord fetched above: skip redundant findUnique inside transaction
-    const wasAlreadyVerified = priorRecord?.status === 'VERIFIED';
 
     const result = await prisma.$transaction(async (tx) => {
+      // Query inside transaction to prevent double-counting when racing with PayProof
+      const livePrior = await tx.verificationRecord.findUnique({
+        where: { branchId_provider_txnReference: { branchId, provider, txnReference: canonicalRef } },
+      });
+      const wasAlreadyVerified = livePrior?.status === 'VERIFIED';
+
       // Persist / update the verification record
       const record = await tx.verificationRecord.upsert({
         where: { branchId_provider_txnReference: { branchId, provider, txnReference: canonicalRef } },

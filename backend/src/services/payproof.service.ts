@@ -495,6 +495,21 @@ export function validateAndParseTelebirrData(
     const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
     if (ageMs > maxAgeMs) {
       logger.warn(`[PayProof] Telebirr receipt is older than max allowed age (${maxAgeHours}h): ${txDate.toISOString()}`);
+      return {
+        success: false,
+        verified: false,
+        status: 'INVALID_RECEIPT',
+        code: 'RECEIPT_TOO_OLD',
+        provider: 'TELEBIRR',
+        reference,
+        amount: settledAmount,
+        settledAmount,
+        currency: 'ETB',
+        transactionDate: txDate,
+        message: `Receipt is older than ${maxAgeHours} hours.`,
+        requestId: reqId,
+        raw: data,
+      };
     }
   }
 
@@ -655,21 +670,30 @@ export async function verifyTelebirrReceiptWithPayProof(
     return result;
   } catch (err: any) {
     const durationMs = Date.now() - t0;
-    logger.error(`[PayProof] Verification failed: ${err.message}`);
-
+    const httpStatus = err?.response?.status;
+    const is402 = httpStatus === 402;
     const isTimeout = err.message?.toLowerCase().includes('timeout');
+
+    if (is402) {
+      logger.error(`[PayProof] HTTP 402 Payment Required — Telebirr verification subscription/credits exhausted (${err.message})`);
+    } else {
+      logger.error(`[PayProof] Verification failed: ${err.message}`);
+    }
+
     return {
       success: false,
       verified: false,
-      status: isTimeout ? 'FAILED_UPSTREAM' : 'INVALID_RECEIPT',
-      code: isTimeout ? 'TIMEOUT' : 'ERROR',
+      status: is402 || isTimeout ? 'FAILED_UPSTREAM' : 'INVALID_RECEIPT',
+      code: is402 ? 'SUBSCRIPTION_EXPIRED' : isTimeout ? 'TIMEOUT' : 'ERROR',
       provider: 'TELEBIRR',
       reference: '',
       amount: 0,
       settledAmount: 0,
       currency: 'ETB',
       durationMs,
-      message: err.message || 'Telebirr receipt verification failed.',
+      message: is402
+        ? 'Telebirr verification service subscription or credits have expired.'
+        : (err.message || 'Telebirr receipt verification failed.'),
     };
   }
 }

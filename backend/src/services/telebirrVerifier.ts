@@ -75,6 +75,40 @@ export class TelebirrVerifier implements ProviderVerifier {
       const receiverPhone = res.creditedPartyAccountNo;
       const receiverName = res.creditedPartyName;
 
+      // ── Freshness check: reject old receipts on the direct portal path ──
+      const maxAgeHours = Number(process.env.RECEIPT_MAX_AGE_HOURS || 24);
+      let txDate: Date | undefined;
+      if (res.paymentDate) {
+        const m = res.paymentDate.match(/(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+        if (m) {
+          const [, dd, mm, yyyy, hh, min, ss] = m;
+          const eatDate = new Date(`${yyyy}-${mm}-${dd}T${hh}:${min}:${ss}+03:00`);
+          if (!isNaN(eatDate.getTime())) txDate = eatDate;
+        } else {
+          const d = new Date(res.paymentDate);
+          if (!isNaN(d.getTime())) txDate = d;
+        }
+      }
+
+      if (txDate) {
+        const ageMs = Date.now() - txDate.getTime();
+        const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
+        if (ageMs > maxAgeMs) {
+          logger.warn(
+            `[TelebirrVerifier] Telebirr receipt ${payload.txnReference} is older than max allowed age (${maxAgeHours}h): ${txDate.toISOString()}`
+          );
+          return {
+            status: 'INVALID_RECEIPT',
+            amountExtracted: parsedAmount > 0 ? parsedAmount : (payload.amount || 0),
+            reference: res.receiptNo || payload.txnReference,
+            receiverAccount: receiverPhone || undefined,
+            payerName: res.payerName,
+            date: txDate,
+            message: `Receipt is older than ${maxAgeHours} hours (${Math.round(ageMs / (3600 * 1000))}h old).`,
+          };
+        }
+      }
+
       logger.info(
         `[TelebirrVerifier] scraped settledAmount="${res.settledAmount}" → parsedAmount=${parsedAmount}, ` +
         `totalPaidAmount="${res.totalPaidAmount}", payload.amount=${payload.amount}`

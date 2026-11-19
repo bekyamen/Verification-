@@ -1,6 +1,8 @@
 # Verification
 
+
 A full-stack payment verification system.
+
 
 ## Structure
 
@@ -10,6 +12,7 @@ A full-stack payment verification system.
 ```
 
 ## Getting Started
+
 
 ### Backend
 
