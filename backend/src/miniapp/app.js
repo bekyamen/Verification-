@@ -890,20 +890,77 @@ function renderVerifyResult(result) {
   let titleText = 'Payment Verified!';
   let descText = 'Legitimate payment received in your designated account.';
 
-  const isWrongReceiver = /wrong receiver|receiver account mismatch|receiver mismatch|not to your registered/i.test(result.message || '');
-  const isUnreadable = (result.status === 'FAILED' || result.status === 'INVALID_RECEIPT' || result.status === 'UNKNOWN') && !isWrongReceiver;
+  const isSubscriptionExpired = Boolean(
+    result.code === 'SUBSCRIPTION_EXPIRED' ||
+    /subscription.*expired|credits?.*finished|renew.*subscription/i.test(result.message || '')
+  );
+
+  const isReceiptTooOld = Boolean(
+    result.code === 'RECEIPT_TOO_OLD' ||
+    /older than \d+ hours|receipt.*expired|የደረሰኝ ጊዜ አልፏል/i.test(result.message || '')
+  );
+
+  const isWrongReceiver = Boolean(
+    !isSubscriptionExpired &&
+    !isReceiptTooOld &&
+    /wrong receiver|receiver account mismatch|receiver mismatch|not to your registered/i.test(result.message || '')
+  );
+
+  const isPendingUpstream = Boolean(
+    !isSubscriptionExpired &&
+    !isReceiptTooOld &&
+    (result.status === 'FAILED_UPSTREAM' || result.status === 'PENDING')
+  );
+
+  const isUnreadable = Boolean(
+    !isSubscriptionExpired &&
+    !isReceiptTooOld &&
+    !isWrongReceiver &&
+    !isPendingUpstream &&
+    (result.status === 'FAILED' || result.status === 'INVALID_RECEIPT' || result.status === 'UNKNOWN' ||
+      /could not detect|unreadable|blurry|invalid format|cannot read|no text found/i.test(result.message || ''))
+  );
 
   if (hint) {
     hint.style.display = isUnreadable ? 'block' : 'none';
   }
 
-  if (result.status === 'FLAGGED_DUPLICATE') {
+  if (result.status === 'VERIFIED') {
+    borderCol = '#30d158';
+    bgCol = 'rgba(48, 209, 88, 0.1)';
+    iconText = '✅';
+    titleText = 'Payment Verified!';
+    descText = result.message || 'Legitimate payment received in your designated account.';
+    haptic('success');
+  } else if (result.status === 'FLAGGED_DUPLICATE') {
     borderCol = '#ff453a';
     bgCol = 'rgba(255, 69, 58, 0.15)';
     iconText = '🚨';
-    titleText = 'Duplicate Receipt!';
-    descText = 'Warning: This receipt was already verified! Do NOT release goods.';
+    titleText = 'Duplicate Receipt! / የተደገመ ደረሰኝ';
+    descText = result.message || 'Warning: This receipt was already verified! Do NOT release goods.';
+    if (desc) desc.style.whiteSpace = 'pre-line';
     haptic('error');
+  } else if (isSubscriptionExpired) {
+    borderCol = '#ff9f0a';
+    bgCol = 'rgba(255, 159, 10, 0.15)';
+    iconText = '💳';
+    titleText = 'Telebirr Service Paused';
+    descText = result.message || 'Telebirr verification subscription/credits have finished. Please renew your Telebirr verification plan or contact support.';
+    haptic('warning');
+  } else if (isReceiptTooOld) {
+    borderCol = '#ff9f0a';
+    bgCol = 'rgba(255, 159, 10, 0.15)';
+    iconText = '⏱️';
+    titleText = 'Receipt Expired / ጊዜው አልፏል';
+    descText = result.message || 'This receipt is older than allowed limit (72 hours). Please request a recent receipt.';
+    haptic('warning');
+  } else if (isPendingUpstream) {
+    borderCol = '#ff9f0a';
+    bgCol = 'rgba(255, 159, 10, 0.15)';
+    iconText = '⏳';
+    titleText = 'Pending Verification — Retry';
+    descText = result.message || 'Could not reach Ethio Telecom right now. Saved as pending — please retry shortly.';
+    haptic('warning');
   } else if (result.status === 'AMOUNT_MISMATCH') {
     borderCol = '#ff9f0a';
     bgCol = 'rgba(255, 159, 10, 0.15)';
@@ -911,24 +968,20 @@ function renderVerifyResult(result) {
     titleText = 'Amount Mismatch';
     descText = result.message || 'Amount differs from bank confirmation.';
     haptic('warning');
-  } else if (result.status === 'FAILED' || result.status === 'INVALID_RECEIPT') {
-    if (isWrongReceiver) {
-      borderCol = '#ff9f0a';
-      bgCol = 'rgba(255, 159, 10, 0.15)';
-      iconText = '⚠️';
-      titleText = 'Wrong Receiver — Not Accepted';
-      descText = result.message || 'Payment was sent to another person\'s account, not to your business. Do NOT release goods.';
-      haptic('warning');
-    } else {
-      borderCol = '#ff453a';
-      bgCol = 'rgba(255, 69, 58, 0.1)';
-      iconText = '❌';
-      titleText = 'Verification Failed';
-      descText = result.message || 'Payment could not be verified.';
-      haptic('error');
-    }
+  } else if (isWrongReceiver) {
+    borderCol = '#ff9f0a';
+    bgCol = 'rgba(255, 159, 10, 0.15)';
+    iconText = '⚠️';
+    titleText = 'Wrong Receiver — Not Accepted';
+    descText = result.message || 'Payment was sent to another person\'s account, not to your business. Do NOT release goods.';
+    haptic('warning');
   } else {
-    haptic('success');
+    borderCol = '#ff453a';
+    bgCol = 'rgba(255, 69, 58, 0.1)';
+    iconText = '❌';
+    titleText = 'Verification Failed';
+    descText = result.message || 'Payment could not be verified.';
+    haptic('error');
   }
 
   card.style.borderColor = borderCol;
@@ -975,6 +1028,17 @@ function renderVerifyResult(result) {
       <span style="color:var(--hint)">Provider:</span>
       <span>${escHtml(result.provider)}</span>
     </div>`;
+  }
+  const rawDate = result.transactionDate || result.verifiedAt;
+  if (rawDate) {
+    const d = new Date(rawDate);
+    if (!isNaN(d.getTime())) {
+      const dateStr = d.toLocaleString('en-GB', { timeZone: 'Africa/Addis_Ababa', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+      html += `<div style="display:flex;justify-content:space-between">
+        <span style="color:var(--hint)">Date:</span>
+        <span>${escHtml(dateStr)}</span>
+      </div>`;
+    }
   }
 
   details.innerHTML = html;
@@ -1150,6 +1214,16 @@ async function handleQuickUploadFile(event) {
   }
 }
 
+let _selectedPhotoProvider = 'TELEBIRR';
+
+function selectPhotoProvider(p) {
+  _selectedPhotoProvider = p;
+  const cbeBtn = document.getElementById('vphoto-prov-cbe');
+  const tbBtn = document.getElementById('vphoto-prov-telebirr');
+  if (cbeBtn) cbeBtn.className = 'vp-prov-btn' + (p === 'CBE' ? ' active' : '');
+  if (tbBtn) tbBtn.className = 'vp-prov-btn' + (p === 'TELEBIRR' ? ' active' : '');
+}
+
 async function verifyStagedGalleryFile() {
   if (!_stagedGalleryFile || _stagedVerifying) return;
   const file = _stagedGalleryFile;
@@ -1164,6 +1238,7 @@ async function verifyStagedGalleryFile() {
 
   const fd = new FormData();
   fd.append('receipt', payloadBlob, isPdf ? (file.name || 'receipt.pdf') : 'receipt.jpg');
+  fd.append('provider', _selectedPhotoProvider || 'TELEBIRR');
 
   const { ok, status, data } = await api('POST', '/verify/image', fd, true);
   setStagedVerifyLoading(false);

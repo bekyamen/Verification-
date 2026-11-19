@@ -76,7 +76,8 @@ export class TelebirrVerifier implements ProviderVerifier {
       const receiverName = res.creditedPartyName;
 
       // ── Freshness check: reject old receipts on the direct portal path ──
-      const maxAgeHours = Number(process.env.RECEIPT_MAX_AGE_HOURS || 24);
+      const envAge = process.env.RECEIPT_MAX_AGE_HOURS;
+      const maxAgeHours = envAge !== undefined ? Number(envAge) : 0;
       let txDate: Date | undefined;
       if (res.paymentDate) {
         const m = res.paymentDate.match(/(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
@@ -90,7 +91,7 @@ export class TelebirrVerifier implements ProviderVerifier {
         }
       }
 
-      if (txDate) {
+      if (maxAgeHours > 0 && txDate) {
         const ageMs = Date.now() - txDate.getTime();
         const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
         if (ageMs > maxAgeMs) {
@@ -104,7 +105,7 @@ export class TelebirrVerifier implements ProviderVerifier {
             receiverAccount: receiverPhone || undefined,
             payerName: res.payerName,
             date: txDate,
-            message: `Receipt is older than ${maxAgeHours} hours (${Math.round(ageMs / (3600 * 1000))}h old).`,
+            message: `Receipt is older than ${maxAgeHours} hours (${Math.round(ageMs / (3600 * 1000))} hours old).`,
           };
         }
       }

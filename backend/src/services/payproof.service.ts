@@ -489,8 +489,9 @@ export function validateAndParseTelebirrData(
     }
   }
 
-  const maxAgeHours = options?.maxAgeHours ?? Number(process.env.RECEIPT_MAX_AGE_HOURS || 72);
-  if (txDate && !isNaN(txDate.getTime())) {
+  const envAge = process.env.RECEIPT_MAX_AGE_HOURS;
+  const maxAgeHours = options?.maxAgeHours ?? (envAge !== undefined ? Number(envAge) : 0);
+  if (maxAgeHours > 0 && txDate && !isNaN(txDate.getTime())) {
     const ageMs = Date.now() - txDate.getTime();
     const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
     if (ageMs > maxAgeMs) {

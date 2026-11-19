@@ -867,6 +867,11 @@
 
   <!-- Photo / Scan Primary Actions -->
   <div id="vform-photo">
+    <div class="vp-prov-row" style="margin-bottom: 12px;">
+      <button id="vphoto-prov-cbe" type="button" class="vp-prov-btn" onclick="selectPhotoProvider('CBE')">🏦 CBE Bank</button>
+      <button id="vphoto-prov-telebirr" type="button" class="vp-prov-btn active" onclick="selectPhotoProvider('TELEBIRR')">📱 Telebirr</button>
+    </div>
+
     <div id="vform-photo-idle" class="vp-cta-row">
       <button type="button" class="vp-take-btn" onclick="openCameraScanner()">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#111827" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

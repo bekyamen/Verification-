@@ -2,6 +2,7 @@ import prisma from '../utils/prisma';
 import { Prisma } from '@prisma/client';
 import { VerificationRequest, verifierRegistry } from './verificationEngine';
 import { accountsCache } from '../utils/verifyCache';
+import { buildDuplicateMessage } from '../utils/duplicateFormatter';
 
 export const processVerification = async (options: VerificationRequest): Promise<{
   status: number;
@@ -84,8 +85,64 @@ export const processVerification = async (options: VerificationRequest): Promise
       return false;
     });
 
+    // ── Check for Cross-Branch Duplicate in Same Organization ────────────────
+    const orgDup = await prisma.verificationRecord.findFirst({
+      where: {
+        provider,
+        txnReference,
+        status: 'VERIFIED',
+        branch: {
+          organization: {
+            branches: {
+              some: { id: branchId },
+            },
+          },
+        },
+      },
+      include: {
+        branch: {
+          include: {
+            organization: {
+              include: {
+                bankSettlementAccounts: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (orgDup && orgDup.branchId !== branchId) {
+      const matchedAccount = orgDup.branch?.organization?.bankSettlementAccounts?.find(
+        (a: any) => a.accountNumber === orgDup.receivingAccount || a.bankName === provider
+      );
+      const ownerName = orgDup.branch?.organization?.name || matchedAccount?.accountHolderName || 'Beki Plc';
+      const receiverParty = orgDup.payerName || matchedAccount?.accountHolderName || 'SADA';
+
+      const dupMessage = buildDuplicateMessage({
+        ownerName,
+        isoDate: orgDup.verifiedAt || orgDup.createdAt,
+        amount: Number(orgDup.amount),
+        receiverParty,
+        transactionDate: orgDup.verifiedAt || orgDup.createdAt,
+        verifiedAt: orgDup.verifiedAt || orgDup.createdAt,
+      });
+
+      return {
+        status: 409,
+        result: {
+          ...orgDup,
+          status: 'FLAGGED_DUPLICATE',
+          ownerName,
+          receiverParty,
+          message: dupMessage,
+        },
+        timings: { dbMs: dbLookupMs, bankMs: 0 },
+      };
+    }
+
     // ── Early Return for Repeat Scans (Bank Bypass) ───────────────────────────
-    // If this transaction was already successfully verified, skip the upstream bank call!
+    // If this transaction was already successfully verified at this branch, skip upstream call!
     if (priorRecord && priorRecord.status === 'VERIFIED') {
       const recordedAmount = Number(priorRecord.amount);
       if (expectedAmount && Math.abs(recordedAmount - expectedAmount) > 0.01) {

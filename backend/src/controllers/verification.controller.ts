@@ -8,6 +8,8 @@ import { dissectPayload } from '../services/linkDissector';
 import { runImageVerification } from '../services/imageVerify.service';
 import { verifyTelebirrReceiptWithPayProof } from '../services/payproof.service';
 import prisma from '../utils/prisma';
+import logger from '../utils/logger';
+import { buildDuplicateMessage } from '../utils/duplicateFormatter';
 
 async function resolveBranchAndCashier(req: AuthenticatedRequest): Promise<{ cashierId: string; branchId: string } | null> {
   const cashierId = req.cashierId || req.user?.userId;
@@ -449,6 +451,113 @@ export const verifyReceiptPayProof = async (req: AuthenticatedRequest, res: Resp
       }
     );
 
+    // Check for existing verified record across organization before accepting
+    let organizationId: string | undefined = undefined;
+    if (context?.branchId) {
+      try {
+        const b = await prisma.branch.findUnique({
+          where: { id: context.branchId },
+          select: { organizationId: true },
+        });
+        organizationId = b?.organizationId;
+      } catch (_) {}
+    }
+
+    if (outcome.status === 'VERIFIED' && outcome.reference) {
+      try {
+        const dup = await prisma.verificationRecord.findFirst({
+          where: {
+            provider: 'TELEBIRR',
+            txnReference: outcome.reference,
+            status: 'VERIFIED',
+            ...(organizationId ? { branch: { organizationId } } : {}),
+          },
+          include: {
+            branch: {
+              include: {
+                organization: {
+                  include: {
+                    bankSettlementAccounts: true,
+                  },
+                },
+              },
+            },
+          },
+        });
+
+        if (dup) {
+          logger.warn(`[PayProof] Duplicate receipt detected: ${outcome.reference}`);
+          if (context?.branchId) {
+            try {
+              const today = new Date(new Date().setHours(0, 0, 0, 0));
+              await prisma.dailyReport.upsert({
+                where: { branchId_reportDate: { branchId: context.branchId, reportDate: today } },
+                create: {
+                  branchId: context.branchId,
+                  reportDate: today,
+                  totalRevenue: 0,
+                  telebirrTotal: 0,
+                  cbeTotal: 0,
+                  cashTotal: 0,
+                  totalTransactions: 0,
+                  duplicatesBlocked: 1,
+                },
+                update: {
+                  duplicatesBlocked: { increment: 1 },
+                },
+              });
+            } catch (_) {}
+          }
+
+          const matchedAccount = dup.branch?.organization?.bankSettlementAccounts?.find(
+            (a: any) => a.accountNumber === dup.receivingAccount || a.bankName === 'TELEBIRR'
+          );
+          const ownerName = dup.branch?.organization?.name || matchedAccount?.accountHolderName || 'Beki Plc';
+          const receiverParty =
+            outcome.receiverName ||
+            (outcome.raw as any)?.to_name ||
+            (outcome.raw as any)?.pdf_link_data?.to_name ||
+            matchedAccount?.accountHolderName ||
+            'SADA';
+
+          const dupMessage = buildDuplicateMessage({
+            ownerName,
+            isoDate: dup.verifiedAt || dup.createdAt,
+            amount: Number(dup.amount),
+            receiverParty,
+            transactionDate: outcome.transactionDate || dup.verifiedAt || dup.createdAt,
+            verifiedAt: dup.verifiedAt || dup.createdAt,
+          });
+
+          const dupPayload = {
+            success: false,
+            verified: false,
+            status: 'FLAGGED_DUPLICATE',
+            provider: 'TELEBIRR',
+            reference: outcome.reference,
+            txnReference: outcome.reference,
+            amount: Number(dup.amount),
+            settledAmount: Number(dup.amount),
+            verifiedAt: dup.verifiedAt?.toISOString(),
+            recordId: dup.id,
+            ownerName,
+            receiverParty,
+            message: dupMessage,
+          };
+
+          if (wantsStream) {
+            sendStreamEvent({ done: true, httpStatus: 409, result: dupPayload });
+            res.end();
+          } else {
+            res.status(409).json(dupPayload);
+          }
+          return;
+        }
+      } catch (err: any) {
+        logger.warn(`[PayProof] Duplicate check error: ${err.message}`);
+      }
+    }
+
     // If verified and branch context exists, persist to database
     let savedRecord: any = null;
     if (context && outcome.status === 'VERIFIED' && outcome.reference) {
@@ -551,6 +660,7 @@ export const verifyReceiptPayProof = async (req: AuthenticatedRequest, res: Resp
       ...outcome,
       ...(savedRecord ? { recordId: savedRecord.id } : {}),
     };
+    delete (responsePayload as any).raw;
 
     if (wantsStream) {
       sendStreamEvent({ done: true, httpStatus, result: responsePayload });

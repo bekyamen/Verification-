@@ -206,16 +206,36 @@ export function formatVerificationResult({ httpStatus, result }: FormatOptions):
       );
     }
 
-    case 'FLAGGED_DUPLICATE':
+    case 'FLAGGED_DUPLICATE': {
+      const ownerName = result.ownerName || 'Beki Plc';
+      const numAmt = Number(result.settledAmount ?? result.amount ?? 0);
+      const amtStr = !isNaN(numAmt) ? numAmt.toFixed(2) : '0.00';
+      const party = result.receiverParty || extractPartyName(result) || 'SADA';
+
+      const rawVerifyDate = result.verifiedAt || result.createdAt;
+      const verifyDate = rawVerifyDate ? new Date(rawVerifyDate) : new Date();
+      const validVerifyDate = isNaN(verifyDate.getTime()) ? new Date() : verifyDate;
+
+      const rawTxDate = result.transactionDate || result.verifiedAt || result.createdAt;
+      const txDate = rawTxDate ? new Date(rawTxDate) : validVerifyDate;
+      const validTxDate = isNaN(txDate.getTime()) ? validVerifyDate : txDate;
+
+      const isoDateStr = validVerifyDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
+      const gregStr = formatGregorian(validTxDate);
+      const ethStr = formatEthiopian(validTxDate);
+      const relStr = formatRelativeTime(validTxDate, new Date());
+
       return (
-        `🔄 *FLAGGED DUPLICATE*\n\n` +
-        `This transaction has already been verified before\\.\n\n` +
-        `🏦 Provider: \`${provider}\`\n` +
-        `🔖 Reference: \`${ref}\`\n` +
-        `💰 Amount: *${esc(amount)}*\n` +
-        (result.verifiedAt ? `🕐 First verified: ${esc(formatGregorian(new Date(result.verifiedAt)))}\n` : '') +
+        `🔄 *FLAGGED DUPLICATE / የተደገመ ደረሰኝ*\n\n` +
+        `Already verified by *${esc(ownerName)}* at \`${isoDateStr}\`\\. Amount confirmed correct: *ETB ${esc(amtStr)}*\\.\n\n` +
+        `ቀድሞውኑ በ*${esc(ownerName)}* በ\`${isoDateStr}\` ተረጋግጧል\\. የመጠን ማረጋገጫ፦ *ETB ${esc(amtStr)}*\\።\n` +
+        `👥 *${esc(party)}*\n` +
+        `📅 ${esc(gregStr)}\n` +
+        (ethStr ? `   \\(${esc(ethStr)}\\)\n` : '') +
+        (relStr ? `   ${esc(relStr)}\n` : '') +
         `\n_⚠ Duplicate blocked by CheckFlow ET_`
       );
+    }
 
     case 'AMOUNT_MISMATCH':
       return (

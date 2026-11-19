@@ -439,5 +439,44 @@ describe('PayProof Telebirr Verification Service', () => {
       assert(formatted.includes('\\(ጥቅምት 3, 2019, 5:13 ከምሽት\\)'));
       assert(formatted.includes('26d 13h from verification'));
     });
+
+    it('formats duplicate Telebirr receipt with English and Amharic owner details', async () => {
+      const { buildDuplicateMessage } = await import('../src/utils/duplicateFormatter');
+      const { formatVerificationResult } = await import('../src/telegram/formatter');
+
+      const msg = buildDuplicateMessage({
+        ownerName: 'Beki Plc',
+        isoDate: '2026-11-19T12:59:08Z',
+        amount: 5,
+        receiverParty: 'SADA',
+        transactionDate: '2026-11-19T12:49:03.000Z',
+        verifiedAt: '2026-11-19T12:59:08.000Z',
+      });
+
+      assert(msg.includes('Already verified by Beki Plc at 2026-11-19T12:59:08Z. Amount confirmed correct: ETB 5.00.'));
+      assert(msg.includes('ቀድሞውኑ በBeki Plc በ2026-11-19T12:59:08Z ተረጋግጧል። የመጠን ማረጋገጫ፦ ETB 5.00።'));
+      assert(msg.includes('👥 SADA'));
+      assert(msg.includes('📅 19 Nov 2026, 3:49 PM'));
+      assert(msg.includes('10, 2019, 9:49 ከሰዓት'));
+
+      const tgMsg = formatVerificationResult({
+        httpStatus: 409,
+        result: {
+          status: 'FLAGGED_DUPLICATE',
+          provider: 'TELEBIRR',
+          txnReference: 'DKJ6DYX88K',
+          amount: 5,
+          settledAmount: 5,
+          ownerName: 'Beki Plc',
+          receiverParty: 'SADA',
+          transactionDate: '2026-11-19T12:49:03.000Z',
+          verifiedAt: '2026-11-19T12:59:08.000Z',
+        },
+      });
+
+      assert(tgMsg.includes('Already verified by *Beki Plc* at `2026-11-19T12:59:08Z`\\. Amount confirmed correct: *ETB 5\\.00*\\.'));
+      assert(tgMsg.includes('ቀድሞውኑ በ*Beki Plc* በ`2026-11-19T12:59:08Z` ተረጋግጧል\\. የመጠን ማረጋገጫ፦ *ETB 5\\.00*\\።'));
+      assert(tgMsg.includes('👥 *SADA*'));
+    });
   });
 });

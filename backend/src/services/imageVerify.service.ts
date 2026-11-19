@@ -23,6 +23,7 @@ import { verifyTelebirrReceiptWithPayProof } from './payproof.service';
 import prisma from '../utils/prisma';
 import { Prisma } from '@prisma/client';
 import logger from '../utils/logger';
+import { buildDuplicateMessage } from '../utils/duplicateFormatter';
 
 export interface ImageVerificationOptions {
   buffer: Buffer;
@@ -87,6 +88,92 @@ async function handlePayProofVerification(
           const verifiedTime = ppOutcome.transactionDate && !isNaN(ppOutcome.transactionDate.getTime())
             ? ppOutcome.transactionDate
             : now;
+
+          const branch = await prisma.branch.findUnique({
+            where: { id: branchId },
+            select: { organizationId: true },
+          });
+          const organizationId = branch?.organizationId;
+
+          // Check if already verified across the organization
+          const dup = await prisma.verificationRecord.findFirst({
+            where: {
+              provider: 'TELEBIRR',
+              txnReference: ppOutcome.reference,
+              status: 'VERIFIED',
+              ...(organizationId ? { branch: { organizationId } } : {}),
+            },
+            include: {
+              branch: {
+                include: {
+                  organization: {
+                    include: {
+                      bankSettlementAccounts: true,
+                    },
+                  },
+                },
+              },
+            },
+          });
+
+          if (dup) {
+            logger.warn(`[image-verify] Duplicate receipt detected for ${ppOutcome.reference} in organization ${organizationId}`);
+            try {
+              const today = new Date(new Date().setHours(0, 0, 0, 0));
+              await prisma.dailyReport.upsert({
+                where: { branchId_reportDate: { branchId, reportDate: today } },
+                create: {
+                  branchId,
+                  reportDate: today,
+                  totalRevenue: 0,
+                  telebirrTotal: 0,
+                  cbeTotal: 0,
+                  cashTotal: 0,
+                  totalTransactions: 0,
+                  duplicatesBlocked: 1,
+                },
+                update: {
+                  duplicatesBlocked: { increment: 1 },
+                },
+              });
+            } catch (_) {}
+
+            const matchedAccount = dup.branch?.organization?.bankSettlementAccounts?.find(
+              (a: any) => a.accountNumber === dup.receivingAccount || a.bankName === 'TELEBIRR'
+            );
+            const ownerName = dup.branch?.organization?.name || matchedAccount?.accountHolderName || 'Beki Plc';
+            const receiverParty =
+              ppOutcome.receiverName ||
+              (ppOutcome.raw as any)?.to_name ||
+              (ppOutcome.raw as any)?.pdf_link_data?.to_name ||
+              matchedAccount?.accountHolderName ||
+              'SADA';
+
+            const dupMessage = buildDuplicateMessage({
+              ownerName,
+              isoDate: dup.verifiedAt || dup.createdAt,
+              amount: Number(dup.amount),
+              receiverParty,
+              transactionDate: ppOutcome.transactionDate || dup.verifiedAt || dup.createdAt,
+              verifiedAt: dup.verifiedAt || dup.createdAt,
+            });
+
+            return {
+              status: 409,
+              result: {
+                status: 'FLAGGED_DUPLICATE',
+                provider: 'TELEBIRR',
+                txnReference: ppOutcome.reference,
+                amount: Number(dup.amount),
+                settledAmount: Number(dup.amount),
+                verifiedAt: dup.verifiedAt?.toISOString(),
+                recordId: dup.id,
+                ownerName,
+                receiverParty,
+                message: dupMessage,
+              },
+            };
+          }
 
           savedRecord = await prisma.$transaction(async (tx) => {
             const prior = await tx.verificationRecord.findUnique({
@@ -182,7 +269,6 @@ async function handlePayProofVerification(
           message: ppOutcome.message,
           verifiedAt: ppOutcome.transactionDate ? ppOutcome.transactionDate.toISOString() : new Date().toISOString(),
           recordId: savedRecord?.id,
-          raw: ppOutcome.raw,
         },
       };
     } else if (ppOutcome.status === 'AMOUNT_MISMATCH') {
@@ -213,6 +299,28 @@ async function handlePayProofVerification(
         result: {
           status: 'FAILED_UPSTREAM',
           code: 'SUBSCRIPTION_EXPIRED',
+          provider: 'TELEBIRR',
+          txnReference: ppOutcome.reference || null,
+          message: ppOutcome.message,
+        },
+      };
+    } else if (ppOutcome.status === 'INVALID_RECEIPT') {
+      return {
+        status: 422,
+        result: {
+          status: 'INVALID_RECEIPT',
+          code: ppOutcome.code,
+          provider: 'TELEBIRR',
+          txnReference: ppOutcome.reference || null,
+          message: ppOutcome.message,
+        },
+      };
+    } else if (ppOutcome.status === 'FAILED_UPSTREAM') {
+      return {
+        status: 502,
+        result: {
+          status: 'FAILED_UPSTREAM',
+          code: ppOutcome.code,
           provider: 'TELEBIRR',
           txnReference: ppOutcome.reference || null,
           message: ppOutcome.message,
@@ -259,6 +367,12 @@ export function recordDirectTelebirrSuccess(): void {
 
 export function directTelebirrAvailable(): boolean {
   if (process.env.TELEBIRR_DIRECT_ENABLED === 'false') return false;
+  // If running on Render/cloud without an HTTP proxy, direct Ethio Telecom portal is firewalled (ECONNABORTED)
+  const isCloudWithoutProxy =
+    !process.env.TELEBIRR_PROXY_URL &&
+    (Boolean(process.env.RENDER) || Boolean(process.env.RENDER_EXTERNAL_URL)) &&
+    process.env.TELEBIRR_DIRECT_ENABLED !== 'true';
+  if (isCloudWithoutProxy) return false;
   return Date.now() >= telebirrDirectPausedUntil;
 }
 
@@ -268,6 +382,19 @@ export async function runImageVerification(
   const { buffer, mimetype, branchId, cashierId, expectedAmount, provider: explicitProvider, onProgress } = opts;
   const t0 = Date.now();
   try { onProgress?.('reading'); } catch {}
+
+  // Fast Path: When Telebirr is explicitly selected, route straight to PayProof!
+  // No local QR decode, no Tesseract OCR, no CPU competition — matches Postman speed (~5-6s).
+  if (explicitProvider === 'TELEBIRR' && process.env.PAYPROOF_SECRET_KEY) {
+    const pp = await handlePayProofVerification(
+      buffer, mimetype, branchId, cashierId, expectedAmount, onProgress
+    );
+    if (pp) {
+      logger.info(`[perf] path=telebirr-direct-pp status=${pp.result?.status} total=${Date.now() - t0}ms`);
+      return pp;
+    }
+    // PayProof gave no usable answer: fall through to existing flow
+  }
 
   const hasPP = !!process.env.PAYPROOF_SECRET_KEY;
 
@@ -451,7 +578,7 @@ export async function runImageVerification(
     // If PayProof was running in background, check its result
     if (hasPP && (!explicitProvider || explicitProvider === 'TELEBIRR')) {
       const ppResult = await runPayProof();
-      if (ppResult && (ppResult.status === 200 || ppResult.status === 400 || ppResult.status === 402)) {
+      if (ppResult) {
         return ppResult;
       }
     }
@@ -471,8 +598,28 @@ export async function runImageVerification(
     };
   }
 
-  // Final verification call (CBE or fallback)
+  // Final verification call (CBE, or Telebirr fallback)
   try { onProgress?.('checking_bank'); } catch {}
+
+  // If Telebirr, prioritize PayProof and avoid direct scraping when unreachable from this network
+  if (detectedProvider === 'TELEBIRR') {
+    if (hasPP) {
+      const ppResult = await runPayProof();
+      if (ppResult) return ppResult;
+    }
+    if (!directTelebirrAvailable()) {
+      return {
+        status: 502,
+        result: {
+          status: 'FAILED_UPSTREAM',
+          message: 'Telebirr verification service is currently unreachable. Please retry shortly.',
+          provider: 'TELEBIRR',
+          txnReference,
+        },
+      };
+    }
+  }
+
   const combinedRawText = [qrValue, ocrText].filter(Boolean).join('\n');
   const normalized = dissectPayload(combinedRawText);
 
