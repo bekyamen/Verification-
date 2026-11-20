@@ -104,7 +104,7 @@ export const verifyImagePayload = async (req: AuthenticatedRequest, res: Respons
       onProgress: wantsStream ? (stage) => sendStreamEvent({ stage }) : undefined,
     });
 
-    if (outcome.result) {
+    if (outcome.result && outcome.result.provider === 'TELEBIRR') {
       const ref = outcome.result.txnReference || outcome.result.reference;
       if (ref) {
         outcome.result.txnReference = ref;

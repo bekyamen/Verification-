@@ -385,6 +385,83 @@ export async function runImageVerification(
   const t0 = Date.now();
   try { onProgress?.('reading'); } catch {}
 
+  // ── Fast Path for CBE (100% Local Logic, ZERO PayProof calls) ────────────────
+  if (explicitProvider === 'CBE') {
+    const fullQrPromise = decodeReceiptQr(buffer, mimetype).catch(() => null);
+    const ocrPromise = parseFileBuffer(buffer, mimetype).catch(() => null);
+
+    const qrValue = await Promise.race([
+      fullQrPromise,
+      new Promise<null>((r) => setTimeout(() => r(null), 1200)),
+    ]);
+
+    const qrNormalized = qrValue ? dissectPayload(qrValue) : null;
+    const qrIsCbeToken = !!(
+      qrValue?.includes('mbreciept.cbe.com.et') || qrValue?.includes('mbreceipt.cbe.com.et')
+    );
+    const cbeTokenRouteDisabled = process.env.CBE_TOKEN_ROUTE === 'off';
+    const isDoomedCbeToken = qrIsCbeToken && cbeTokenRouteDisabled;
+
+    if (qrNormalized?.txnReference && !isDoomedCbeToken) {
+      try { onProgress?.('checking_bank'); } catch {}
+      const outcome = await processVerification({
+        branchId,
+        cashierId,
+        provider: 'CBE',
+        txnReference: qrNormalized.txnReference,
+        amount: expectedAmount || qrNormalized.amount || undefined,
+        expectedAmount,
+        receivingAccount: qrNormalized.receivingAccount,
+        senderAccount: qrNormalized.senderAccount,
+        payerPhone: qrNormalized.payerPhone,
+        payerName: qrNormalized.payerName,
+        printedDate: qrNormalized.printedDate,
+        rawText: qrValue || '',
+        receiptImageUrl: 'UPLOADED_FILE_PROOF',
+      });
+      return { status: outcome.status, result: outcome.result };
+    }
+
+    const ocrResult = await ocrPromise;
+    const ocrText = ocrResult?.rawText || '';
+    const ftMatch = ocrText.match(/\b(FT[A-Z0-9]{8,14})\b/i) ?? ocrText.match(/(FT[A-Z0-9]{10})/i);
+    const txnReference = ftMatch ? ftMatch[1].toUpperCase() : (ocrResult?.txnReference || null);
+
+    if (!txnReference) {
+      return {
+        status: 422,
+        result: {
+          status: 'INVALID_RECEIPT',
+          message: 'Hold steady, use good light, and fill the frame.',
+          provider: 'CBE',
+          txnReference: null,
+        },
+      };
+    }
+
+    try { onProgress?.('checking_bank'); } catch {}
+    const combinedRawText = [qrValue, ocrText].filter(Boolean).join('\n');
+    const normalized = dissectPayload(combinedRawText);
+
+    const outcome = await processVerification({
+      branchId,
+      cashierId,
+      provider: 'CBE',
+      txnReference,
+      amount: ocrResult?.amount || normalized.amount || undefined,
+      expectedAmount,
+      receivingAccount: normalized.receivingAccount,
+      senderAccount: normalized.senderAccount,
+      payerPhone: normalized.payerPhone,
+      payerName: normalized.payerName,
+      printedDate: normalized.printedDate,
+      rawText: combinedRawText,
+      receiptImageUrl: 'UPLOADED_FILE_PROOF',
+    });
+
+    return { status: outcome.status, result: outcome.result };
+  }
+
   // Fast Path: When Telebirr is explicitly selected, route straight to PayProof!
   // No local QR decode, no Tesseract OCR, no CPU competition — sub-2s response.
   const hasPP = Boolean(process.env.PAYPROOF_SECRET_KEY || process.env.PAYPROOF_API_KEY);
@@ -399,12 +476,12 @@ export async function runImageVerification(
     // PayProof gave no usable answer: fall through to existing flow
   }
 
-  // 1. PayProof fallback, memoized (one upload max), started immediately
+  // 1. PayProof fallback, memoized (one upload max), started only for Telebirr or unspecified
   let ppPromise: Promise<VerificationOutcome | null> | null = null;
   const runPayProof = () =>
     (ppPromise ??= handlePayProofVerification(buffer, mimetype, branchId, cashierId, expectedAmount, onProgress)
       .catch(() => null));
-  if (hasPP && (!explicitProvider || explicitProvider === 'TELEBIRR')) {
+  if (hasPP && explicitProvider === 'TELEBIRR') {
     runPayProof();
   }
 
