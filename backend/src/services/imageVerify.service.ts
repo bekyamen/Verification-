@@ -408,27 +408,6 @@ export async function runImageVerification(
     runPayProof();
   }
 
-  // ── Fast Path for Telegram Bot / Unspecified Provider ─────────────────────────
-  // Race PayProof (~1.2s) against QR decode (~150ms).
-  // If PayProof finishes with a decisive outcome (VERIFIED, FLAGGED_DUPLICATE, etc.)
-  // or CBE QR decodes instantly, return immediately!
-  // This eliminates the 5-7 second Tesseract OCR wait that made Telegram bot slow.
-  const ppFastPromise: Promise<VerificationOutcome | null> =
-    hasPP && (!explicitProvider || explicitProvider === 'TELEBIRR')
-      ? runPayProof().then((outcome) => {
-          if (
-            outcome &&
-            (outcome.status === 200 ||
-              outcome.status === 409 ||
-              outcome.status === 400 ||
-              outcome.status === 422)
-          ) {
-            return outcome;
-          }
-          return null;
-        }).catch(() => null)
-      : Promise.resolve(null);
-
   // 2. QR and OCR run in parallel, QR time-boxed to 1200ms
   const ocrPromise = parseFileBuffer(buffer, mimetype).catch(() => null);
   const fullQrPromise = decodeReceiptQr(buffer, mimetype).catch(() => null);
@@ -436,44 +415,6 @@ export async function runImageVerification(
     fullQrPromise,
     new Promise<null>((r) => setTimeout(() => r(null), 1200)),
   ]);
-
-  const cbeFastQrPromise: Promise<VerificationOutcome | null> = fullQrPromise.then(async (q) => {
-    if (!q) return null;
-    const n = dissectPayload(q);
-    if (n.provider === 'CBE' && n.txnReference) {
-      try { onProgress?.('checking_bank'); } catch {}
-      const outcome = await processVerification({
-        branchId,
-        cashierId,
-        provider: 'CBE',
-        txnReference: n.txnReference,
-        amount: expectedAmount || n.amount || undefined,
-        expectedAmount,
-        receivingAccount: n.receivingAccount,
-        senderAccount: n.senderAccount,
-        payerPhone: n.payerPhone,
-        payerName: n.payerName,
-        printedDate: n.printedDate,
-        rawText: q,
-        receiptImageUrl: 'UPLOADED_FILE_PROOF',
-      });
-      if (outcome.status === 200 || outcome.status === 409 || outcome.status === 400 || outcome.status === 422) {
-        return { status: outcome.status, result: outcome.result };
-      }
-    }
-    return null;
-  }).catch(() => null);
-
-  const quickOutcome = await Promise.race([
-    ppFastPromise.then((v) => (v ? { kind: 'payproof', outcome: v } : null)),
-    cbeFastQrPromise.then((v) => (v ? { kind: 'cbe-qr', outcome: v } : null)),
-    new Promise<null>((r) => setTimeout(() => r(null), 2500)),
-  ]);
-
-  if (quickOutcome?.outcome) {
-    logger.info(`[perf] path=instant-${quickOutcome.kind} status=${quickOutcome.outcome.result?.status} total=${Date.now() - t0}ms`);
-    return quickOutcome.outcome;
-  }
 
   // 3. First Telebirr reference wins
   const refFromQr = qrPromise.then((q) => {
@@ -768,4 +709,3 @@ export async function verifyImage(
 
   return Promise.any(attempts);
 }
-
