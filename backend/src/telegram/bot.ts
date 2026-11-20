@@ -287,105 +287,6 @@ async function verifyText(
   });
 }
 
-// ── Fast Provider Selection & In-Memory State ────────────────────────────────
-export type Prov = 'TELEBIRR' | 'CBE';
-export const lastProvider = new Map<number, Prov>();
-export const orgBanks = new Map<string, { banks: Set<string>; exp: number }>();
-export const pending = new Map<string, { fileId: string; mime: string; userId: string; branchId: string; expectedAmount?: number }>();
-
-export async function orgProviders(orgId: string): Promise<Set<string>> {
-  const hit = orgBanks.get(orgId);
-  if (hit && hit.exp > Date.now()) return hit.banks;
-  const rows = await prisma.bankSettlementAccount.findMany({
-    where: { organizationId: orgId, isActive: true },
-    select: { bankName: true },
-  });
-  const banks = new Set(rows.map((r) => String(r.bankName)));
-  orgBanks.set(orgId, { banks, exp: Date.now() + 10 * 60_000 });
-  return banks;
-}
-
-export async function pickProvider(caption: string | undefined, fromId: number, orgId: string): Promise<Prov | undefined> {
-  const c = (caption || '').toLowerCase();
-  if (/tele\s*birr/.test(c)) return 'TELEBIRR';
-  if (/\bcbe\b/.test(c)) return 'CBE';
-  const banks = await orgProviders(orgId).catch(() => new Set<string>());
-  const t = banks.has('TELEBIRR'), b = banks.has('CBE');
-  if (t && !b) return 'TELEBIRR';
-  if (b && !t) return 'CBE';
-  return lastProvider.get(fromId);
-}
-
-export function extractExpectedAmount(caption?: string): number | undefined {
-  if (!caption) return undefined;
-  const match = caption.match(/(?:^|\s)(?:etb\s*)?(\d+(?:\.\d{1,2})?)(?:\s*etb)?(?:\s|$)/i);
-  if (match) {
-    const val = parseFloat(match[1]);
-    if (!isNaN(val) && val > 0 && val < 1000000 && val !== 2024 && val !== 2025 && val !== 2026) {
-      return val;
-    }
-  }
-  return undefined;
-}
-
-async function runForProvider(
-  ctx: Context,
-  bot: Bot,
-  u: TelegramUserContext,
-  fileId: string,
-  mime: string,
-  provider: Prov,
-  statusMsgId?: number,
-  expectedAmount?: number
-) {
-  const chatId = ctx.chat!.id;
-  let delivered = false;
-
-  const edit = async (txt: string) => {
-    if (statusMsgId) {
-      try {
-        await ctx.api.editMessageText(chatId, statusMsgId, txt, { parse_mode: 'MarkdownV2' });
-        delivered = true;
-      } catch {
-        // Edit might fail if message deleted or unchanged
-      }
-    }
-  };
-
-  try {
-    const { buffer } = await downloadTelegramFile(bot, fileId);
-    const outcome = await runImageVerification({
-      buffer,
-      mimetype: mime,
-      branchId: u.branchId,
-      cashierId: u.userId,
-      provider,
-      expectedAmount,
-      onProgress: (s) => {
-        void edit(s === 'reading' ? '📖 Reading receipt\\.\\.\\.' : '🏦 Checking with the bank\\.\\.\\.');
-      },
-    });
-
-    const st = outcome.result?.status;
-    if (st === 'VERIFIED' || st === 'FLAGGED_DUPLICATE') {
-      if (ctx.from?.id) lastProvider.set(ctx.from.id, provider);
-    }
-    logger.info(`[telegram] ${provider} verify result: ${formatStatusLine(outcome.result)}`);
-    const text = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
-    await edit(text);
-    if (!delivered) {
-      await ctx.reply(text, { parse_mode: 'MarkdownV2' }).catch(() => {});
-    }
-  } catch (err: any) {
-    logger.error(`[telegram] runForProvider error: ${err.message}`);
-    const errText = '🆘 Failed to process this receipt\\. Please try again\\.';
-    await edit(errText);
-    if (!delivered) {
-      await ctx.reply(errText, { parse_mode: 'MarkdownV2' }).catch(() => {});
-    }
-  }
-}
-
 // ── Bot creation ─────────────────────────────────────────────────────────────
 
 export function createBot(): Bot {
@@ -668,24 +569,42 @@ export function createBot(): Bot {
 
     const photos = ctx.message.photo;
     const targetPhoto = selectOptimalPhoto(photos);
-    const caption = ctx.message.caption;
-    const expectedAmount = extractExpectedAmount(caption);
     logger.info(`[telegram] photo verify user=${userCtx.fullName} (${userCtx.organizationName}) dim=${targetPhoto.width}x${targetPhoto.height} fileId=${targetPhoto.file_id}`);
 
-    const provider = await pickProvider(caption, fromId!, userCtx.organizationId);
-    if (provider) {
-      sendTyping(ctx).catch(() => {});
-      const statusMsg = await ctx.reply('⏳ Verifying receipt photo\\.\\.\\.', { parse_mode: 'MarkdownV2' }).catch(() => null);
-      await runForProvider(ctx, bot, userCtx, targetPhoto.file_id, 'image/jpeg', provider, statusMsg?.message_id, expectedAmount);
-    } else {
-      const key = `${ctx.chat!.id}:${ctx.message.message_id}`;
-      pending.set(key, { fileId: targetPhoto.file_id, mime: 'image/jpeg', userId: userCtx.userId, branchId: userCtx.branchId, expectedAmount });
-      setTimeout(() => pending.delete(key), 10 * 60_000);
-      await ctx.reply('Which receipt is this?', {
-        reply_markup: new InlineKeyboard()
-          .text('📱 Telebirr', `p:T:${key}`)
-          .text('🏦 CBE', `p:C:${key}`),
+    // Fire typing and status prompt in parallel with download (do not block!)
+    sendTyping(ctx).catch(() => {});
+    const statusMsgPromise = ctx.reply('⏳ Verifying receipt photo\\.\\.\\.', { parse_mode: 'MarkdownV2' }).catch(() => null);
+
+    let replyText: string;
+    try {
+      const { buffer, mime } = await downloadTelegramFile(bot, targetPhoto.file_id);
+      const outcome = await runImageVerification({
+        buffer,
+        mimetype:  mime,
+        branchId:  userCtx.branchId,
+        cashierId: userCtx.userId,
       });
+      logger.info(`[telegram] photo result: ${formatStatusLine(outcome.result)}`);
+      replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
+    } catch (err: any) {
+      logger.error(`[telegram] photo error: ${err.message}`);
+      replyText = '🆘 Failed to process this image\\. Please send the receipt  again as a document\\.';
+    }
+
+    // Deliver reply by transforming the status message in-place for instant feedback
+    const statusMsg = await statusMsgPromise;
+    if (statusMsg) {
+      try {
+        await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, replyText, { parse_mode: 'MarkdownV2' });
+        return;
+      } catch {
+        // Fall back to new reply if edit fails
+      }
+    }
+    try {
+      await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
+    } catch (sendErr: any) {
+      logger.error(`[telegram] photo reply failed: ${sendErr.message}`);
     }
   });
 
@@ -714,51 +633,40 @@ export function createBot(): Bot {
       return;
     }
 
-    const docMime = isPdf ? 'application/pdf' : (mimeType || 'image/jpeg');
-    const caption = ctx.message.caption;
-    const expectedAmount = extractExpectedAmount(caption);
-    logger.info(`[telegram] document verify user=${userCtx.fullName} (${userCtx.organizationName}) mime=${docMime} fileId=${doc.file_id}`);
+    sendTyping(ctx).catch(() => {});
+    const statusMsgPromise = ctx.reply(`⏳ Verifying ${isPdf ? 'PDF' : 'image'} document\\.\\.\\.`, { parse_mode: 'MarkdownV2' }).catch(() => null);
 
-    const provider = await pickProvider(caption, fromId!, userCtx.organizationId);
-    if (provider) {
-      sendTyping(ctx).catch(() => {});
-      const statusMsg = await ctx.reply(`⏳ Verifying ${isPdf ? 'PDF' : 'image'} document\\.\\.\\.`, { parse_mode: 'MarkdownV2' }).catch(() => null);
-      await runForProvider(ctx, bot, userCtx, doc.file_id, docMime, provider, statusMsg?.message_id, expectedAmount);
-    } else {
-      const key = `${ctx.chat!.id}:${ctx.message.message_id}`;
-      pending.set(key, { fileId: doc.file_id, mime: docMime, userId: userCtx.userId, branchId: userCtx.branchId, expectedAmount });
-      setTimeout(() => pending.delete(key), 10 * 60_000);
-      await ctx.reply('Which receipt is this?', {
-        reply_markup: new InlineKeyboard()
-          .text('📱 Telebirr', `p:T:${key}`)
-          .text('🏦 CBE', `p:C:${key}`),
+    logger.info(`[telegram] document verify user=${userCtx.fullName} (${userCtx.organizationName}) mime=${mimeType} fileId=${doc.file_id}`);
+
+    let replyText: string;
+    try {
+      const { buffer, mime } = await downloadTelegramFile(bot, doc.file_id);
+      const outcome = await runImageVerification({
+        buffer,
+        mimetype:  isPdf ? 'application/pdf' : mime,
+        branchId:  userCtx.branchId,
+        cashierId: userCtx.userId,
       });
+      logger.info(`[telegram] document result: ${formatStatusLine(outcome.result)}`);
+      replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
+    } catch (err: any) {
+      logger.error(`[telegram] document error: ${err.message}`);
+      replyText = '🆘 Failed to process this document\\. Please try again\\.';
     }
-  });
 
-  // ── Callback query handler: provider selection for ambiguous receipts ───────
-  bot.callbackQuery(/^p:([TC]):(.+)$/, async (ctx) => {
-    const match = ctx.match;
-    if (!match || !match[1] || !match[2]) return;
-    const prov: Prov = match[1] === 'T' ? 'TELEBIRR' : 'CBE';
-    const jobKey = match[2];
-    const job = pending.get(jobKey);
-    await ctx.answerCallbackQuery().catch(() => {});
-    if (!job) return;
-
-    const fromId = ctx.from?.id;
-    const u = await resolveUserContext(fromId);
-    if (!u || job.userId !== u.userId) return;
-    pending.delete(jobKey);
-    if (fromId) lastProvider.set(fromId, prov);
-
-    const statusMsgId = ctx.msg?.message_id;
-    if (statusMsgId) {
-      await ctx.api.editMessageText(ctx.chat!.id, statusMsgId, '⏳ Verifying\\.\\.\\.', { parse_mode: 'MarkdownV2' }).catch(() => {});
-      await runForProvider(ctx, bot, u, job.fileId, job.mime, prov, statusMsgId, job.expectedAmount);
-    } else {
-      const msg = await ctx.reply('⏳ Verifying\\.\\.\\.', { parse_mode: 'MarkdownV2' }).catch(() => null);
-      await runForProvider(ctx, bot, u, job.fileId, job.mime, prov, msg?.message_id, job.expectedAmount);
+    const statusMsg = await statusMsgPromise;
+    if (statusMsg) {
+      try {
+        await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, replyText, { parse_mode: 'MarkdownV2' });
+        return;
+      } catch {
+        // Fall back to new reply if edit fails
+      }
+    }
+    try {
+      await ctx.reply(replyText, { parse_mode: 'MarkdownV2' });
+    } catch (sendErr: any) {
+      logger.error(`[telegram] document reply failed: ${sendErr.message}`);
     }
   });
 

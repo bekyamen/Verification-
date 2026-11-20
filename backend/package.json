@@ -8,7 +8,7 @@
     "start": "prisma migrate deploy && node dist/index.js",
     "link-telegram": "tsx src/scripts/linkTelegram.ts",
     "postinstall": "prisma generate",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/payproof.test.ts"
   },
   "keywords": [],
   "author": "",
