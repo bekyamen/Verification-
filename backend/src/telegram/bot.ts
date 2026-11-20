@@ -588,7 +588,7 @@ export function createBot(): Bot {
       replyText = formatVerificationResult({ httpStatus: outcome.status, result: outcome.result });
     } catch (err: any) {
       logger.error(`[telegram] photo error: ${err.message}`);
-      replyText = '🆘 Failed to process this image\\. Please try again or send the receipt as a document \\(PDF\\)\\.';
+      replyText = '🆘 Failed to process this image\\. Please send the receipt  again as a document\\.';
     }
 
     // Deliver reply by transforming the status message in-place for instant feedback
