@@ -1057,14 +1057,19 @@ function triggerQuickUpload() {
   if (input) input.click();
 }
 
+let _stagedClientProvider = null;
+
 function classifyClientQrPayload(raw) {
   const trimmed = String(raw || '').trim();
   if (/cbe\.com\.et|apps\.cbe|mbreceipt|\bFT[A-Z0-9]{8,16}\b/i.test(trimmed)) {
+    _stagedClientProvider = 'CBE';
     return 'CBE QR detected — reference will be taken from QR.';
   }
   if (/ethiotelecom\.et|transactioninfo|telebirr/i.test(trimmed)) {
+    _stagedClientProvider = 'TELEBIRR';
     return 'Telebirr QR detected — reference will be taken from QR.';
   }
+  _stagedClientProvider = null;
   return 'QR code detected — reference will be taken from QR.';
 }
 
@@ -1132,6 +1137,7 @@ async function detectClientQrCaption(file, objectUrl) {
 function clearStagedGalleryFile() {
   if (_stagedVerifying) return;
   _qrScanToken += 1;
+  _stagedClientProvider = null;
   if (_stagedGalleryUrl) {
     URL.revokeObjectURL(_stagedGalleryUrl);
     _stagedGalleryUrl = null;
@@ -1215,16 +1221,6 @@ async function handleQuickUploadFile(event) {
   }
 }
 
-let _selectedPhotoProvider = 'TELEBIRR';
-
-function selectPhotoProvider(p) {
-  _selectedPhotoProvider = p;
-  const cbeBtn = document.getElementById('vphoto-prov-cbe');
-  const tbBtn = document.getElementById('vphoto-prov-telebirr');
-  if (cbeBtn) cbeBtn.className = 'vp-prov-btn' + (p === 'CBE' ? ' active' : '');
-  if (tbBtn) tbBtn.className = 'vp-prov-btn' + (p === 'TELEBIRR' ? ' active' : '');
-}
-
 async function verifyStagedGalleryFile() {
   if (!_stagedGalleryFile || _stagedVerifying) return;
   const file = _stagedGalleryFile;
@@ -1239,7 +1235,9 @@ async function verifyStagedGalleryFile() {
 
   const fd = new FormData();
   fd.append('receipt', payloadBlob, isPdf ? (file.name || 'receipt.pdf') : 'receipt.jpg');
-  fd.append('provider', _selectedPhotoProvider || 'TELEBIRR');
+  if (_stagedClientProvider) {
+    fd.append('provider', _stagedClientProvider);
+  }
 
   const { ok, status, data } = await api('POST', '/verify/image', fd, true);
   setStagedVerifyLoading(false);

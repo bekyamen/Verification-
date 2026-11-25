@@ -22,6 +22,7 @@ import { processVerification } from './verification.service';
 import { verifyTelebirrReceiptWithPayProof } from './payproof.service';
 import prisma from '../utils/prisma';
 import { Prisma } from '@prisma/client';
+import sharp from 'sharp';
 import logger from '../utils/logger';
 import { buildDuplicateMessage } from '../utils/duplicateFormatter';
 
@@ -378,6 +379,84 @@ export function directTelebirrAvailable(): boolean {
   return Date.now() >= telebirrDirectPausedUntil;
 }
 
+/**
+ * Ultra-fast provider pre-detector (< 25ms).
+ * Quickly analyzes QR headers, color histograms (CBE burgundy vs Telebirr green),
+ * or PDF text before running any heavy OCR, automatically routing to the appropriate service.
+ */
+export async function quickDetectProvider(
+  buffer: Buffer,
+  mimetype: string
+): Promise<'CBE' | 'TELEBIRR' | 'UNKNOWN'> {
+  // 1. Check QR code if decodable (< 350ms)
+  try {
+    const qr = await Promise.race([
+      decodeReceiptQr(buffer, mimetype),
+      new Promise<null>((r) => setTimeout(() => r(null), 350)),
+    ]);
+    if (qr) {
+      if (/cbe\.com\.et|apps\.cbe|mbreceipt|\bFT[A-Z0-9]{8,16}\b/i.test(qr)) {
+        return 'CBE';
+      }
+      if (/ethiotelecom\.et|transactioninfo|telebirr/i.test(qr)) {
+        return 'TELEBIRR';
+      }
+    }
+  } catch {}
+
+  // 2. Fast color analysis with Sharp (64x64 downsample, ~5ms)
+  try {
+    if (mimetype.startsWith('image/')) {
+      const { data, info } = await sharp(buffer)
+        .resize(64, 64, { fit: 'fill' })
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+      let greenCount = 0;
+      let purpleCount = 0;
+
+      for (let i = 0; i < data.length; i += info.channels) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+
+        // Telebirr brand green: g dominates r and b (e.g. #76B82A, #30D158, #82C341)
+        if (g > 100 && g > r * 1.25 && g > b * 1.25) {
+          greenCount++;
+        }
+        // CBE brand purple/burgundy: r and b dominate g (e.g. #701A75, #8B1D74)
+        if (r > 60 && b > 60 && g < r * 0.75 && g < b * 0.75) {
+          purpleCount++;
+        }
+      }
+
+      if (purpleCount > 80 && purpleCount > greenCount * 1.5) {
+        return 'CBE';
+      }
+      if (greenCount > 60 && greenCount > purpleCount * 1.5) {
+        return 'TELEBIRR';
+      }
+    }
+  } catch {}
+
+  // 3. Fast PDF text extract (< 10ms)
+  if (mimetype === 'application/pdf') {
+    try {
+      const pdfParse = require('pdf-parse');
+      const parsed = await pdfParse(buffer, { max: 1 });
+      const text = parsed.text || '';
+      if (/Commercial Bank of Ethiopia|CBE|\bFT[A-Z0-9]{8,14}\b/i.test(text)) {
+        return 'CBE';
+      }
+      if (/Telebirr|Ethio Telecom|Transfer Money/i.test(text)) {
+        return 'TELEBIRR';
+      }
+    } catch {}
+  }
+
+  return 'UNKNOWN';
+}
+
 export async function runImageVerification(
   opts: ImageVerificationOptions
 ): Promise<VerificationOutcome> {
@@ -385,8 +464,18 @@ export async function runImageVerification(
   const t0 = Date.now();
   try { onProgress?.('reading'); } catch {}
 
+  // ── Auto-Detect Provider If Not Explicitly Provided ─────────────────────────
+  let effectiveProvider = explicitProvider;
+  if (!effectiveProvider) {
+    const detected = await quickDetectProvider(buffer, mimetype);
+    if (detected !== 'UNKNOWN') {
+      effectiveProvider = detected;
+      logger.info(`[image-verify] Quick-detected provider: ${effectiveProvider} in ${Date.now() - t0}ms`);
+    }
+  }
+
   // ── Fast Path for CBE (100% Local Logic, ZERO PayProof calls) ────────────────
-  if (explicitProvider === 'CBE') {
+  if (effectiveProvider === 'CBE') {
     const fullQrPromise = decodeReceiptQr(buffer, mimetype).catch(() => null);
     const ocrPromise = parseFileBuffer(buffer, mimetype).catch(() => null);
 
@@ -462,10 +551,10 @@ export async function runImageVerification(
     return { status: outcome.status, result: outcome.result };
   }
 
-  // Fast Path: When Telebirr is explicitly selected, route straight to PayProof!
+  // Fast Path: When Telebirr is detected or explicit, route straight to PayProof!
   // No local QR decode, no Tesseract OCR, no CPU competition — sub-2s response.
   const hasPP = Boolean(process.env.PAYPROOF_SECRET_KEY || process.env.PAYPROOF_API_KEY);
-  if (explicitProvider === 'TELEBIRR' && hasPP) {
+  if (effectiveProvider === 'TELEBIRR' && hasPP) {
     const pp = await handlePayProofVerification(
       buffer, mimetype, branchId, cashierId, expectedAmount, onProgress
     );
@@ -476,12 +565,12 @@ export async function runImageVerification(
     // PayProof gave no usable answer: fall through to existing flow
   }
 
-  // 1. PayProof fallback, memoized (one upload max), started only for Telebirr or unspecified
+  // 1. PayProof fallback, memoized (one upload max), started only for Telebirr
   let ppPromise: Promise<VerificationOutcome | null> | null = null;
   const runPayProof = () =>
     (ppPromise ??= handlePayProofVerification(buffer, mimetype, branchId, cashierId, expectedAmount, onProgress)
       .catch(() => null));
-  if (hasPP && explicitProvider === 'TELEBIRR') {
+  if (hasPP && effectiveProvider === 'TELEBIRR') {
     runPayProof();
   }
 
@@ -609,7 +698,7 @@ export async function runImageVerification(
   const ocrText = ocrResult?.rawText || '';
 
   // Determine provider
-  let detectedProvider = explicitProvider || ocrResult?.provider || 'UNKNOWN';
+  let detectedProvider = effectiveProvider || explicitProvider || ocrResult?.provider || 'UNKNOWN';
   if (detectedProvider === 'UNKNOWN') {
     if (/CBE|COMMERCIAL BANK|\bFT[A-Z0-9]{8,14}\b/i.test(ocrText)) {
       detectedProvider = 'CBE';
@@ -654,7 +743,7 @@ export async function runImageVerification(
   // Unreadable receipt handling
   if (!txnReference || detectedProvider === 'UNKNOWN') {
     // If PayProof was running in background, check its result
-    if (hasPP && (!explicitProvider || explicitProvider === 'TELEBIRR')) {
+    if (hasPP && (!effectiveProvider || effectiveProvider === 'TELEBIRR')) {
       const ppResult = await runPayProof();
       if (ppResult) {
         return ppResult;
