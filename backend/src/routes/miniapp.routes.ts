@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { miniappAuth, miniappLink, miniappMe } from '../controllers/miniapp.controller';
+import { miniappAuth, miniappLink, miniappUnlink, miniappMe } from '../controllers/miniapp.controller';
 import { requireAuth } from '../middleware/auth.middleware';
 
 const router = Router();
@@ -9,6 +9,9 @@ router.post('/auth', miniappAuth);
 
 // Link a Telegram account to an existing API user (requires valid JWT)
 router.post('/link', requireAuth, miniappLink);
+
+// Unlink a Telegram account from current user (requires valid JWT)
+router.post('/unlink', requireAuth, miniappUnlink);
 
 // Get full profile of the logged-in Mini App user
 router.get('/me', requireAuth, miniappMe);

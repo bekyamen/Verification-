@@ -225,6 +225,37 @@ export const miniappLink = async (req: AuthenticatedRequest, res: Response): Pro
   }
 };
 
+// ── POST /api/miniapp/unlink ──────────────────────────────────────────────────
+// Unlinks the Telegram ID from the current authenticated user.
+export const miniappUnlink = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { telegramId: true },
+    });
+
+    if (user?.telegramId) {
+      clearUserContextCache(user.telegramId);
+      await prisma.user.update({
+        where: { id: userId },
+        data: { telegramId: null },
+      });
+      logger.info(`[miniapp] Unlinked telegramId for userId=${userId}`);
+    }
+
+    res.status(200).json({ ok: true, message: 'Telegram account unlinked successfully' });
+  } catch (err: any) {
+    logger.error(`[miniapp] unlink error: ${err.message}`);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
 // ── GET /api/miniapp/me ───────────────────────────────────────────────────────
 // Returns full profile for the logged-in user (used by the Profile screen).
 

@@ -450,11 +450,61 @@ export const getMe = async (req: AuthenticatedRequest, res: Response): Promise<v
 
 /**
  * POST /api/auth/logout
- * Signs out current user by clearing the auth cookie.
+ * Signs out current user by clearing the auth cookie and invalidating sessions.
  */
-export const logout = async (_req: Request, res: Response): Promise<void> => {
-  res.clearCookie('token', COOKIE_OPTIONS);
-  res.status(200).json({ message: 'Signed out successfully' });
+export const logout = async (req: Request, res: Response): Promise<void> => {
+  try {
+    // 1. Invalidate HttpOnly auth cookie thoroughly
+    const { maxAge, ...clearOptions } = COOKIE_OPTIONS;
+    res.clearCookie('token', { ...clearOptions, path: '/', expires: new Date(0) });
+    res.clearCookie('token', { path: '/' });
+    res.clearCookie('token');
+
+    // 2. Invalidate any cached Telegram bot session context if token/user is present
+    let userId: string | undefined = (req as AuthenticatedRequest).user?.userId;
+    if (!userId) {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const rawToken = authHeader.split(' ')[1];
+        try {
+          const decoded = jwt.verify(rawToken, JWT_SECRET) as JwtPayload;
+          userId = decoded?.userId;
+        } catch {
+          // Token may be invalid/expired, ignore
+        }
+      }
+    }
+
+    if (userId) {
+      // Clear user context cache from Telegram bot if telegramId is linked
+      try {
+        const user = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { telegramId: true },
+        });
+        if (user?.telegramId) {
+          clearUserContextCache(user.telegramId);
+
+          // If client explicitly requested unlinking Telegram on logout
+          const shouldUnlink = (req.body as any)?.unlinkTelegram === true || (req.query as any)?.unlinkTelegram === 'true';
+          if (shouldUnlink) {
+            await prisma.user.update({
+              where: { id: userId },
+              data: { telegramId: null },
+            });
+            logger.info(`[auth] Unlinked telegramId for userId=${userId} on logout`);
+          }
+        }
+      } catch (err: any) {
+        logger.warn(`[auth] logout: failed to clear bot context: ${err.message}`);
+      }
+    }
+
+    res.status(200).json({ message: 'Signed out successfully' });
+  } catch (error: any) {
+    logger.error(`[auth] logout error: ${error.message}`);
+    res.status(500).json({ error: 'Failed to sign out', details: error.message });
+  }
 };
 
 /**

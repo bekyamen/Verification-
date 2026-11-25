@@ -299,6 +299,16 @@ window.addEventListener('DOMContentLoaded', async () => {
 async function bootApp() {
   showScreen('loading');
 
+  // Check if the user explicitly chose to sign out
+  const isExplicitlyLoggedOut = localStorage.getItem('cf_logged_out') === 'true';
+  if (isExplicitlyLoggedOut) {
+    _token = null;
+    _profile = null;
+    localStorage.removeItem('cf_token');
+    showScreen('login');
+    return;
+  }
+
   if (_token) {
     const { ok, data } = await api('GET', '/auth/me');
     if (ok && data.user) {
@@ -311,12 +321,13 @@ async function bootApp() {
     localStorage.removeItem('cf_token');
   }
 
-  // Telegram initData auto-login check
+  // Telegram initData auto-login check (only if not explicitly logged out)
   if (_tgInitData) {
     const { ok, data } = await api('POST', '/miniapp/auth', { initData: _tgInitData });
     if (ok && data.token && data.user) {
       _token = data.token;
       _profile = data.user;
+      localStorage.removeItem('cf_logged_out');
       localStorage.setItem('cf_token', _token);
       await navTo('verify');
       return;
@@ -384,6 +395,7 @@ async function submitRegister() {
 
   _token = data.token;
   _profile = data.user;
+  localStorage.removeItem('cf_logged_out');
   localStorage.setItem('cf_token', _token);
 
   if (_tgInitData && _token) {
@@ -450,6 +462,7 @@ async function submitAdminLogin() {
 
   _token = data.token;
   _profile = data.user;
+  localStorage.removeItem('cf_logged_out');
   localStorage.setItem('cf_token', _token);
 
   if (_tgInitData && _token) {
@@ -490,6 +503,7 @@ async function submitCashierLogin() {
 
   _token = data.token;
   _profile = data.cashier || data.user;
+  localStorage.removeItem('cf_logged_out');
   localStorage.setItem('cf_token', _token);
 
   haptic('success');
@@ -1736,7 +1750,16 @@ async function logout() {
   _recentHistoryItems = [];
   _verifySummary = { totalAmount: 0, totalCount: 0, byProvider: {} };
   _hasLoadedHistory = false;
+  // Mark explicit logout so mini-app will not blindly auto-login on startup
+  localStorage.setItem('cf_logged_out', 'true');
   localStorage.removeItem('cf_token');
+  localStorage.removeItem('cf_user');
+  try { sessionStorage.clear(); } catch (e) {}
+  try {
+    document.cookie.split(';').forEach((c) => {
+      document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=' + new Date(0).toUTCString() + ';path=/');
+    });
+  } catch (e) {}
   toast('Signed out successfully');
   showScreen('login');
 }
