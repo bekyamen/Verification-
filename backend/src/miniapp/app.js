@@ -279,7 +279,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Pre-fill verified phone from sessionStorage if available
   const prefill = sessionStorage.getItem('prefill_phone');
   if (prefill) {
-    setVerifiedPhone(prefill);
+    const regPhoneEl = document.getElementById('reg-phone');
+    if (regPhoneEl) regPhoneEl.value = prefill;
   }
 
   validateRegForm();
@@ -338,80 +339,6 @@ async function bootApp() {
 }
 
 // ── REGISTRATION STATE & HELPERS ─────────────────────────────────────────────
-let _verifiedPhone = '';
-let _verifiedContact = null;
-
-function setVerifiedPhone(phone, contact) {
-  _verifiedPhone = (phone || '').trim();
-  if (contact) _verifiedContact = contact;
-  const phoneEl = document.getElementById('reg-phone');
-  if (phoneEl) phoneEl.value = _verifiedPhone;
-  const badge = document.getElementById('reg-phone-verified-badge');
-  if (badge) badge.style.display = _verifiedPhone ? 'block' : 'none';
-  clearErrors(['reg-phone-err']);
-  if (_verifiedPhone) {
-    sessionStorage.setItem('prefill_phone', _verifiedPhone);
-  }
-  validateRegForm();
-}
-
-function requestTelegramPhone() {
-  if (!tg) {
-    toast('Telegram WebApp not detected');
-    return;
-  }
-  if (typeof tg.requestContact !== 'function') {
-    toast('Contact sharing is not supported on this client version');
-    return;
-  }
-
-  const shareText = document.getElementById('share-phone-text');
-  if (shareText) shareText.textContent = 'Requesting...';
-  haptic('selection');
-
-  let handled = false;
-  const onContact = (status, event) => {
-    if (handled) return;
-    handled = true;
-    try { tg.offEvent?.('contactRequested', onReq); } catch (e) {}
-    if (shareText) shareText.textContent = '📱 Share Phone';
-
-    if (status === 'cancelled' || status === 'denied' || !status) {
-      haptic('error');
-      toast('Phone sharing cancelled');
-      return;
-    }
-
-    if (status === 'sent') {
-      const rawPhone =
-        event?.responseUnsafe?.contact?.phone_number ||
-        event?.contact?.phone_number ||
-        event?.phone_number || '';
-      const contact = event?.responseUnsafe?.contact || event?.contact || { phone_number: rawPhone };
-      setVerifiedPhone(rawPhone, contact);
-      haptic('success');
-      toast('Phone verified via Telegram!');
-    }
-  };
-
-  const onReq = (event) => {
-    const status = event?.status || (event?.sent ? 'sent' : 'cancelled');
-    onContact(status, event);
-  };
-
-  try { tg.onEvent?.('contactRequested', onReq); } catch (e) {}
-  try {
-    tg.requestContact((sent, event) => {
-      const status = sent ? 'sent' : 'cancelled';
-      onContact(status, event);
-    });
-  } catch (e) {
-    handled = true;
-    if (shareText) shareText.textContent = '📱 Share Phone';
-    toast('Could not request contact: ' + e.message);
-  }
-}
-
 function setRegAccountType(type) {
   haptic('selection');
   const btnBiz = document.getElementById('reg-type-business');
@@ -442,12 +369,14 @@ function setRegAccountType(type) {
 
 function validateRegForm() {
   const nameEl = document.getElementById('reg-name');
+  const phoneEl = document.getElementById('reg-phone');
   const typeEl = document.getElementById('reg-type');
   const bizNameEl = document.getElementById('reg-biz-name');
   const branchCountEl = document.getElementById('reg-branch-count');
-  const submitBtn = document.getElementById('reg-submit-btn');
+  const submitBtn = document.getElementById('reg-btn') || document.getElementById('reg-submit-btn');
 
   const fullName = nameEl ? nameEl.value.trim() : '';
+  const phone = phoneEl ? phoneEl.value.trim().replace(/[\s\-()]/g, '') : '';
   const accountType = typeEl ? typeEl.value : 'business';
   const bizName = bizNameEl ? bizNameEl.value.trim() : '';
   const branches = branchCountEl ? parseInt(branchCountEl.value, 10) : 1;
@@ -457,7 +386,7 @@ function validateRegForm() {
   if (!fullName || fullName.length < 2 || fullName.length > 60) {
     valid = false;
   }
-  if (!_verifiedPhone) {
+  if (!phone || !/^(?:\+251|0)?[97]\d{8}$/.test(phone)) {
     valid = false;
   }
   if (accountType === 'business') {
@@ -480,11 +409,13 @@ async function submitRegister() {
   clearErrors(['reg-name-err', 'reg-phone-err', 'reg-biz-name-err', 'reg-branch-count-err']);
 
   const nameEl = document.getElementById('reg-name');
+  const phoneEl = document.getElementById('reg-phone');
   const typeEl = document.getElementById('reg-type');
   const bizNameEl = document.getElementById('reg-biz-name');
   const branchCountEl = document.getElementById('reg-branch-count');
 
   const fullName = nameEl ? nameEl.value.trim() : '';
+  const phone = phoneEl ? phoneEl.value.trim().replace(/[\s\-()]/g, '') : '';
   const accountType = typeEl ? typeEl.value : 'business';
   const bizName = bizNameEl ? bizNameEl.value.trim() : '';
   const branches = branchCountEl ? parseInt(branchCountEl.value, 10) : 1;
@@ -494,8 +425,8 @@ async function submitRegister() {
     showErr('reg-name-err', 'Full name must be between 2 and 60 characters');
     hasErr = true;
   }
-  if (!_verifiedPhone) {
-    showErr('reg-phone-err', 'Please verify your phone number with Telegram');
+  if (!phone || !/^(?:\+251|0)?[97]\d{8}$/.test(phone)) {
+    showErr('reg-phone-err', 'Please enter a valid Ethiopian phone number (e.g. 0912345678)');
     hasErr = true;
   }
   if (accountType === 'business') {
@@ -514,13 +445,14 @@ async function submitRegister() {
     return;
   }
 
-  setLoading('reg-submit-btn', true);
+  const btn = document.getElementById('reg-btn') || document.getElementById('reg-submit-btn');
+  if (btn) btn.disabled = true;
 
   const payload = {
     initData: _tgInitData || 'dev_bypass',
     fullName,
+    phone,
     accountType,
-    contact: _verifiedContact || { phone_number: _verifiedPhone },
   };
 
   if (accountType === 'business') {
@@ -529,7 +461,7 @@ async function submitRegister() {
   }
 
   const { ok, data } = await api('POST', '/auth/register', payload);
-  setLoading('reg-submit-btn', false);
+  if (btn) btn.disabled = false;
 
   if (!ok) {
     haptic('error');
@@ -1941,16 +1873,6 @@ async function signInWithTelegramPhone() {
   const banner = document.getElementById('tg-not-found-banner');
   if (banner) banner.style.display = 'none';
 
-  if (!tg) {
-    toast('Telegram WebApp not detected');
-    return;
-  }
-
-  if (typeof tg.requestContact !== 'function') {
-    toast('Contact request not supported on this client version');
-    return;
-  }
-
   const spinner = document.getElementById('tg-login-spinner');
   const icon = document.getElementById('tg-login-icon');
   const text = document.getElementById('tg-login-text');
@@ -1968,96 +1890,45 @@ async function signInWithTelegramPhone() {
   if (text) text.textContent = 'Signing in...';
   if (btn) btn.disabled = true;
 
-  let completed = false;
+  try {
+    const res = await api('POST', '/auth/telegram-login', {
+      initData: _tgInitData || 'dev_bypass',
+    });
 
-  const handleContact = async (status, event) => {
-    if (completed) return;
-    completed = true;
-
-    try { tg.offEvent?.('contactRequested', onContactReq); } catch (e) {}
-
-    if (status === 'cancelled' || status === 'denied' || !status) {
+    if (!res.ok) {
       resetBtn();
       haptic('error');
-      toast('Sign-in cancelled');
+      if (res.status === 404 || res.data?.notFound) {
+        if (banner) {
+          const msgEl = document.getElementById('tg-not-found-msg');
+          if (msgEl) msgEl.textContent = 'Account not found. Please register first.';
+          banner.style.display = 'block';
+        }
+        toast('Account not found. Please register first.');
+      } else {
+        toast('❌ ' + (res.data?.error || 'Telegram sign-in failed'));
+      }
       return;
     }
 
-    if (status === 'sent') {
-      try {
-        const rawPhone =
-          event?.responseUnsafe?.contact?.phone_number ||
-          event?.contact?.phone_number ||
-          event?.phone_number;
+    _token = res.data.token;
+    _profile = res.data.user;
+    localStorage.removeItem('manual_logout');
+    localStorage.removeItem('cf_logged_out');
+    localStorage.setItem('cf_token', _token);
 
-        const contact = event?.responseUnsafe?.contact || event?.contact;
-        const res = await api('POST', '/auth/telegram-login', {
-          initData: _tgInitData,
-          contact,
-          phone: rawPhone,
-        });
-
-        if (!res.ok) {
-          resetBtn();
-          haptic('error');
-          if (res.status === 404 || res.data?.notFound) {
-            _unregisteredDetectedPhone = res.data?.phone || rawPhone || '';
-            if (banner) {
-              const msgEl = document.getElementById('tg-not-found-msg');
-              if (msgEl) msgEl.textContent = 'Account not found. Please register first.';
-              banner.style.display = 'block';
-            }
-            toast('Account not found. Please register first.');
-          } else {
-            toast('❌ ' + (res.data?.error || 'Telegram sign-in failed'));
-          }
-          return;
-        }
-
-        _token = res.data.token;
-        _profile = res.data.user;
-        localStorage.removeItem('manual_logout');
-        localStorage.removeItem('cf_logged_out');
-        localStorage.setItem('cf_token', _token);
-
-        resetBtn();
-        haptic('success');
-        toast(`Welcome back, ${_profile.fullName.split(' ')[0]}!`);
-        await navTo('verify');
-      } catch (err) {
-        resetBtn();
-        haptic('error');
-        toast('❌ Connection error during sign-in');
-      }
-    } else {
-      resetBtn();
-    }
-  };
-
-  const onContactReq = (event) => {
-    const status = event?.status || (event?.sent ? 'sent' : 'cancelled');
-    handleContact(status, event);
-  };
-
-  try { tg.onEvent?.('contactRequested', onContactReq); } catch (e) {}
-
-  try {
-    tg.requestContact((sent, event) => {
-      const status = sent ? 'sent' : 'cancelled';
-      handleContact(status, event);
-    });
-  } catch (e) {
-    completed = true;
     resetBtn();
-    toast('Could not request contact: ' + e.message);
+    haptic('success');
+    toast(`Welcome back, ${_profile.fullName.split(' ')[0]}!`);
+    await navTo('verify');
+  } catch (err) {
+    resetBtn();
+    haptic('error');
+    toast('❌ Connection error during sign-in');
   }
 }
 
 function goToRegisterFromNotFound() {
-  if (_unregisteredDetectedPhone) {
-    const regPhoneEl = document.getElementById('reg-phone');
-    if (regPhoneEl) regPhoneEl.value = _unregisteredDetectedPhone;
-  }
   showScreen('register');
 }
 

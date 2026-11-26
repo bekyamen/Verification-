@@ -8,6 +8,11 @@ export const registerSchema = z.object({
   fullName: z.string().trim()
     .min(2, "Full name must be at least 2 characters")
     .max(60, "Full name must not exceed 60 characters"),
+  phone: z.string().trim()
+    .transform(cleanPhone)
+    .refine((val) => /^(?:\+251|0)?[97]\d{8}$/.test(val), {
+      message: "Please enter a valid Ethiopian phone number (e.g., 0912345678 or +251912345678)",
+    }),
   accountType: z.preprocess(
     (val) => (typeof val === 'string' ? val.trim().toLowerCase() : val),
     z.enum(["business", "personal"])

@@ -510,15 +510,10 @@
     <div id="reg-name-err" class="field-error"></div>
     <div class="form-gap"></div>
 
-    <!-- b) Phone Number (Telegram Verified) -->
+    <!-- b) Phone Number -->
     <label>Phone Number <span class="req">*</span></label>
-    <div style="display:flex;gap:8px;align-items:center;">
-      <input id="reg-phone" type="text" placeholder="Share phone via Telegram" readonly style="flex:1;background:rgba(255,255,255,0.06);cursor:default;" />
-      <button class="btn" style="width:auto;padding:12px 14px;white-space:nowrap;font-size:13px;font-weight:700;background:linear-gradient(135deg, #0088cc 0%, #00a2ff 100%);color:#fff;" id="share-phone-btn" type="button" onclick="requestTelegramPhone()">
-        <span id="share-phone-text">📱 Share Phone</span>
-      </button>
-    </div>
-    <div id="reg-phone-verified-badge" style="display:none;font-size:12px;color:#30d158;margin-top:4px;font-weight:600;">✓ Verified through Telegram</div>
+    <input id="reg-phone" type="tel" placeholder="0912345678" autocomplete="tel" oninput="validateRegForm()" />
+    <div class="form-hint" style="font-size:12px;color:var(--hint);margin-top:4px;">Accepts 09..., 07..., or +2519...</div>
     <div id="reg-phone-err" class="field-error"></div>
     <div class="form-gap"></div>
 

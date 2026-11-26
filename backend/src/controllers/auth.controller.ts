@@ -67,47 +67,41 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
     const telegramUserId = BigInt(parsed.user.id);
 
-    // 2. If contact was passed directly from Telegram requestContact, save to telegram_contacts
-    if (req.body.contact?.phone_number) {
-      if (req.body.contact.user_id && BigInt(req.body.contact.user_id) !== telegramUserId) {
-        res.status(403).json({ error: 'Shared contact does not match the current Telegram session' });
-        return;
-      }
-      const rawContactPhone = normalizePhone(req.body.contact.phone_number);
-      await prisma.telegramContact.upsert({
-        where: { telegramUserId },
-        update: {
-          phoneNumber: rawContactPhone,
-          firstName: req.body.contact.first_name || parsed.user.first_name || null,
-          lastName: req.body.contact.last_name || parsed.user.last_name || null,
-        },
-        create: {
-          telegramUserId,
-          phoneNumber: rawContactPhone,
-          firstName: req.body.contact.first_name || parsed.user.first_name || null,
-          lastName: req.body.contact.last_name || parsed.user.last_name || null,
-        },
-      });
-    }
-
-    // 3. Fetch verified phone number from telegram_contacts table
-    const storedContact = await prisma.telegramContact.findUnique({
-      where: { telegramUserId },
-    });
-
-    const verifiedPhone = storedContact?.phoneNumber;
-    if (!verifiedPhone) {
-      res.status(400).json({ error: 'Phone number not verified through Telegram. Please share your phone number.' });
+    // 2. Extract and normalize phone number
+    const rawPhone = validatedData.phone || req.body.contact?.phone_number;
+    if (!rawPhone) {
+      res.status(400).json({ error: 'Phone number is required' });
       return;
     }
 
-    const normalizedPhone = normalizePhone(verifiedPhone);
+    const normalizedPhone = normalizePhone(rawPhone);
 
-    // 4. Prevent duplicate accounts by phone number AND telegram_user_id
+    // Record verified contact in telegram_contacts table
+    await prisma.telegramContact.upsert({
+      where: { telegramUserId },
+      update: {
+        phoneNumber: normalizedPhone,
+        firstName: req.body.contact?.first_name || parsed.user.first_name || null,
+        lastName: req.body.contact?.last_name || parsed.user.last_name || null,
+      },
+      create: {
+        telegramUserId,
+        phoneNumber: normalizedPhone,
+        firstName: req.body.contact?.first_name || parsed.user.first_name || null,
+        lastName: req.body.contact?.last_name || parsed.user.last_name || null,
+      },
+    }).catch(() => {});
+
+    // 3. Prevent duplicate accounts by phone number AND telegram_user_id
+    const withoutPlus = normalizedPhone.replace(/^\+/, '');
+    const localFormat = normalizedPhone.startsWith('+251') ? '0' + normalizedPhone.slice(4) : null;
+    const phoneCandidates = [normalizedPhone, withoutPlus];
+    if (localFormat) phoneCandidates.push(localFormat);
+
     const duplicateUser = await prisma.user.findFirst({
       where: {
         OR: [
-          { phone: normalizedPhone },
+          { phone: { in: phoneCandidates } },
           { telegramId: telegramUserId },
           { telegramUserId },
         ],
@@ -682,33 +676,12 @@ export const telegramPhoneLogin = async (req: Request, res: Response): Promise<v
 
     const telegramUserId = BigInt(parsed.user.id);
 
-    // 2. Extract phone number and ensure it cannot be spoofed
-    const rawPhone = contact?.phone_number || phone;
-    if (!rawPhone) {
-      res.status(400).json({ error: 'Phone number is required from Telegram contact' });
-      return;
-    }
-
-    // If contact payload contains user_id, ensure it matches the verified Telegram user id
-    if (contact?.user_id && BigInt(contact.user_id) !== telegramUserId) {
-      logger.warn(`[telegram-login] User ID mismatch: contact.user_id=${contact.user_id} vs initData.user.id=${telegramUserId}`);
-      res.status(403).json({ error: 'Shared contact does not match the current Telegram user session' });
-      return;
-    }
-
-    // 3. Normalize extracted phone number to E.164 (+251...)
-    const normalizedPhone = normalizePhone(rawPhone);
-    const withoutPlus = normalizedPhone.replace(/^\+/, '');
-    const localFormat = normalizedPhone.startsWith('+251') ? '0' + normalizedPhone.slice(4) : null;
-    const phoneCandidates = [normalizedPhone, withoutPlus];
-    if (localFormat) phoneCandidates.push(localFormat);
-
-    // 4. Look up existing user in database by phone or linked telegramId
-    const user = await prisma.user.findFirst({
+    // 2. Fast 1-tap lookup: check if user already exists by verified Telegram identity
+    let user = await prisma.user.findFirst({
       where: {
         OR: [
-          { phone: { in: phoneCandidates } },
           { telegramId: telegramUserId },
+          { telegramUserId },
         ],
       },
       include: {
@@ -718,14 +691,40 @@ export const telegramPhoneLogin = async (req: Request, res: Response): Promise<v
       },
     });
 
-    // If not registered yet, return clear 404 with pre-fill phone
+    // If not yet linked by Telegram ID, check if phone number was provided to link
+    const rawPhone = contact?.phone_number || phone;
+    let normalizedPhone = '';
+    if (!user && rawPhone) {
+      if (contact?.user_id && BigInt(contact.user_id) !== telegramUserId) {
+        logger.warn(`[telegram-login] User ID mismatch: contact.user_id=${contact.user_id} vs initData.user.id=${telegramUserId}`);
+        res.status(403).json({ error: 'Shared contact does not match the current Telegram user session' });
+        return;
+      }
+
+      normalizedPhone = normalizePhone(rawPhone);
+      const withoutPlus = normalizedPhone.replace(/^\+/, '');
+      const localFormat = normalizedPhone.startsWith('+251') ? '0' + normalizedPhone.slice(4) : null;
+      const phoneCandidates = [normalizedPhone, withoutPlus];
+      if (localFormat) phoneCandidates.push(localFormat);
+
+      user = await prisma.user.findFirst({
+        where: { phone: { in: phoneCandidates } },
+        include: {
+          organization: { select: { id: true, name: true } },
+          branch: { select: { id: true, name: true } },
+          _count: { select: { createdAccounts: true } },
+        },
+      });
+    }
+
+    // If not registered yet, return clear 404
     if (!user) {
-      logger.info(`[telegram-login] Unregistered phone attempted login: ${normalizedPhone}`);
+      logger.info(`[telegram-login] Unregistered Telegram user attempted login: ${telegramUserId}`);
       res.status(404).json({
         error: 'Account not found. Please register first.',
         notFound: true,
         needsRegistration: true,
-        phone: normalizedPhone,
+        phone: normalizedPhone || undefined,
         telegramUser: parsed.user,
       });
       return;
