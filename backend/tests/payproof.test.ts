@@ -440,6 +440,33 @@ describe('PayProof Telebirr Verification Service', () => {
       assert(formatted.includes('26d 13h from verification'));
     });
 
+    it('formats verified Telebirr receipt with cashier attribution for admin alert', async () => {
+      const { formatVerificationResult, esc } = await import('../src/telegram/formatter');
+      const sampleResult = {
+        status: 'VERIFIED',
+        provider: 'TELEBIRR',
+        txnReference: 'DKC42WJ0PQ',
+        amount: 11,
+        settledAmount: 11,
+        receiverName: 'SADA',
+        transactionDate: '2026-11-22T19:51:00.000Z',
+        verifiedAt: '2026-11-22T19:51:00.000Z',
+      };
+
+      const baseCard = formatVerificationResult({ httpStatus: 200, result: sampleResult });
+      const cashierName = 'Abebe';
+      const adminMessage =
+        `${baseCard}\n\n` +
+        `━━━━━━━━━━━━━━━━━━━\n` +
+        `👤 *Cashier:* ${esc(cashierName)}`;
+
+      assert(adminMessage.includes('🏦 `TELEBIRR`'));
+      assert(adminMessage.includes('💰 *ETB 11*'));
+      assert(adminMessage.includes('🔖 `DKC42WJ0PQ`'));
+      assert(adminMessage.includes('👥 *SADA*'));
+      assert(adminMessage.includes('👤 *Cashier:* Abebe'));
+    });
+
     it('formats duplicate Telebirr receipt with English and Amharic owner details', async () => {
       const { buildDuplicateMessage } = await import('../src/utils/duplicateFormatter');
       const { formatVerificationResult } = await import('../src/telegram/formatter');

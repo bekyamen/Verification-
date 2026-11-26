@@ -20,6 +20,7 @@ import { dissectPayload } from './linkDissector';
 import { parseReceiptLink } from './receiptLink';
 import { processVerification } from './verification.service';
 import { verifyTelebirrReceiptWithPayProof } from './payproof.service';
+import { notifyAdminsOnCashierVerification } from './notification.service';
 import prisma from '../utils/prisma';
 import { Prisma } from '@prisma/client';
 import sharp from 'sharp';
@@ -250,6 +251,41 @@ async function handlePayProofVerification(
         } catch (dbErr: any) {
           logger.warn(`[image-verify] Could not persist PayProof verification to DB: ${dbErr.message}`);
         }
+      }
+
+      // Notify business admin(s) when cashier completes a Telebirr verification
+      if (branchId && cashierId) {
+        const notifyResult = savedRecord ? { ...savedRecord } : {
+          status: 'VERIFIED',
+          provider: 'TELEBIRR',
+          txnReference: ppOutcome.reference || ppOutcome.txnReference,
+          amount: ppOutcome.settledAmount,
+          settledAmount: ppOutcome.settledAmount,
+          payerName: ppOutcome.senderName,
+          payerPhone: ppOutcome.senderPhone,
+          receivingAccount: ppOutcome.receiverAccount,
+          transactionDate: ppOutcome.transactionDate,
+          verifiedAt: new Date(),
+        };
+        const receiverParty =
+          ppOutcome.receiverName ||
+          (ppOutcome.raw as any)?.to_name ||
+          (ppOutcome.raw as any)?.pdf_link_data?.to_name ||
+          'SADA';
+        (notifyResult as any).receiverName = receiverParty;
+        (notifyResult as any).receiverParty = receiverParty;
+        (notifyResult as any).to_name = receiverParty;
+        if (ppOutcome.transactionDate) {
+          (notifyResult as any).transactionDate = ppOutcome.transactionDate;
+        }
+
+        void notifyAdminsOnCashierVerification({
+          branchId,
+          cashierId,
+          result: notifyResult,
+        }).catch((err) => {
+          logger.warn(`[admin-notify] Failed to notify admin for Telebirr: ${err.message}`);
+        });
       }
 
       return {

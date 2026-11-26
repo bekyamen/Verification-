@@ -652,11 +652,36 @@ export const verifyReceiptPayProof = async (req: AuthenticatedRequest, res: Resp
       }
     }
 
-    if (savedRecord && savedRecord.status === 'VERIFIED' && context?.branchId && context?.cashierId) {
+    if (outcome.status === 'VERIFIED' && context?.branchId && context?.cashierId) {
+      const notifyResult = savedRecord ? { ...savedRecord } : {
+        status: 'VERIFIED',
+        provider: 'TELEBIRR',
+        txnReference: outcome.reference || (outcome as any).txnReference,
+        amount: outcome.settledAmount || outcome.amount,
+        settledAmount: outcome.settledAmount || outcome.amount,
+        payerName: outcome.senderName,
+        payerPhone: outcome.senderPhone,
+        receivingAccount: outcome.receiverAccount,
+        transactionDate: outcome.transactionDate,
+        verifiedAt: new Date(),
+      };
+      const finalParty =
+        outcome.receiverName ||
+        (outcome as any).to_name ||
+        (outcome.raw as any)?.to_name ||
+        (outcome.raw as any)?.pdf_link_data?.to_name ||
+        'SADA';
+      (notifyResult as any).receiverName = finalParty;
+      (notifyResult as any).receiverParty = finalParty;
+      (notifyResult as any).to_name = finalParty;
+      if (outcome.transactionDate) {
+        (notifyResult as any).transactionDate = outcome.transactionDate;
+      }
+
       void notifyAdminsOnCashierVerification({
         branchId: context.branchId,
         cashierId: context.cashierId,
-        result: savedRecord,
+        result: notifyResult,
       }).catch((err) => {
         logger.warn(`[admin-notify] Failed to notify admin: ${err.message}`);
       });
