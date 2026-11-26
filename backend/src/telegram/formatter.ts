@@ -131,27 +131,81 @@ export function formatRelativeTime(targetDate: Date, baseDate: Date = new Date()
   }
 }
 
+/** Check if a string looks like a person or business name rather than an account number / digits / asterisks */
+export function isLikelyPersonOrBusinessName(name?: string | null): boolean {
+  if (!name || typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  if (trimmed.length < 2) return false;
+  const digitsAndStars = trimmed.replace(/[^0-9*]/g, '').length;
+  return digitsAndStars / trimmed.length <= 0.5;
+}
+
 /** Extract credited party / recipient or payer name from result */
 export function extractPartyName(result: any): string {
-  if (result.receiverName && typeof result.receiverName === 'string' && result.receiverName.trim()) {
-    return result.receiverName.trim();
+  // 1. Direct receiver name fields
+  const directReceiver =
+    result.receiverName ||
+    result.receiverParty ||
+    result.to_name ||
+    result.accountHolderName ||
+    result.receiver;
+
+  if (typeof directReceiver === 'string' && directReceiver.trim()) {
+    const trimmed = directReceiver.trim();
+    if (isLikelyPersonOrBusinessName(trimmed)) {
+      return trimmed;
+    }
   }
+
+  // 2. Raw upstream payload fields
   const raw = result.raw;
   if (raw) {
-    if (typeof raw.to_name === 'string' && raw.to_name.trim()) return raw.to_name.trim();
-    if (raw.pdf_link_data?.to_name && typeof raw.pdf_link_data.to_name === 'string' && raw.pdf_link_data.to_name.trim()) {
+    if (typeof raw.to_name === 'string' && raw.to_name.trim() && isLikelyPersonOrBusinessName(raw.to_name)) {
+      return raw.to_name.trim();
+    }
+    if (raw.pdf_link_data?.to_name && typeof raw.pdf_link_data.to_name === 'string' && isLikelyPersonOrBusinessName(raw.pdf_link_data.to_name)) {
       return raw.pdf_link_data.to_name.trim();
     }
-    if (raw.link_receipt_data?.credited_party_name && typeof raw.link_receipt_data.credited_party_name === 'string') {
+    if (raw.link_receipt_data?.credited_party_name && typeof raw.link_receipt_data.credited_party_name === 'string' && isLikelyPersonOrBusinessName(raw.link_receipt_data.credited_party_name)) {
       return raw.link_receipt_data.credited_party_name.trim();
     }
+    if (typeof raw.creditAccountHolder === 'string' && raw.creditAccountHolder.trim() && isLikelyPersonOrBusinessName(raw.creditAccountHolder)) {
+      return raw.creditAccountHolder.trim();
+    }
+    if (typeof raw.creditAccountName === 'string' && raw.creditAccountName.trim() && isLikelyPersonOrBusinessName(raw.creditAccountName)) {
+      return raw.creditAccountName.trim();
+    }
+    if (typeof raw.receiver === 'string' && raw.receiver.trim() && isLikelyPersonOrBusinessName(raw.receiver)) {
+      return raw.receiver.trim();
+    }
   }
+
+  // 3. Raw scanned text heuristics (e.g. "for <Name> ETB-..." or "Credited to: <Name>")
+  if (result.rawScannedText && typeof result.rawScannedText === 'string') {
+    const nameMatch =
+      result.rawScannedText.match(/(?:for|credited to|beneficiary|receiver|to)\s+([A-Za-z\s]{3,30})(?:\s+ETB|\s+on|\s+dated|\s+account|\n|$)/i);
+    if (nameMatch && nameMatch[1] && nameMatch[1].trim() && !/^(ETB|CBE|BIRR|TELEBIRR)$/i.test(nameMatch[1].trim())) {
+      return nameMatch[1].trim();
+    }
+  }
+
+  // 4. Fallback to receiving account (if not masked digits) or payer name
+  if (result.receivingAccount && typeof result.receivingAccount === 'string' && result.receivingAccount.trim()) {
+    const acc = result.receivingAccount.trim();
+    if (isLikelyPersonOrBusinessName(acc)) {
+      return acc;
+    }
+  }
+
+  if (result.payerName && typeof result.payerName === 'string' && result.payerName.trim() && isLikelyPersonOrBusinessName(result.payerName)) {
+    return result.payerName.trim();
+  }
+
+  // 5. Last resort: receiving account (even if masked), or payer phone
   if (result.receivingAccount && typeof result.receivingAccount === 'string' && result.receivingAccount.trim()) {
     return result.receivingAccount.trim();
   }
-  if (result.payerName && typeof result.payerName === 'string' && result.payerName.trim()) {
-    return result.payerName.trim();
-  }
+
   if (result.payerPhone && typeof result.payerPhone === 'string' && result.payerPhone.trim()) {
     return result.payerPhone.trim();
   }

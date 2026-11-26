@@ -4,6 +4,7 @@ import { VerificationRequest, verifierRegistry } from './verificationEngine';
 import { accountsCache } from '../utils/verifyCache';
 import { buildDuplicateMessage } from '../utils/duplicateFormatter';
 import { notifyAdminsOnCashierVerification } from './notification.service';
+import { receiptAccountMatchesRegistered } from './cbeVerifier';
 
 export const processVerification = async (options: VerificationRequest): Promise<{
   status: number;
@@ -115,10 +116,17 @@ export const processVerification = async (options: VerificationRequest): Promise
 
     if (orgDup && orgDup.branchId !== branchId) {
       const matchedAccount = orgDup.branch?.organization?.bankSettlementAccounts?.find(
-        (a: any) => a.accountNumber === orgDup.receivingAccount || a.bankName === provider
+        (a: any) =>
+          a.accountNumber === orgDup.receivingAccount ||
+          receiptAccountMatchesRegistered(orgDup.receivingAccount || '', a.accountNumber) ||
+          a.bankName === provider
       );
       const ownerName = orgDup.branch?.organization?.name || matchedAccount?.accountHolderName || 'Beki Plc';
-      const receiverParty = orgDup.payerName || matchedAccount?.accountHolderName || 'SADA';
+      const receiverParty =
+        (orgDup as any).receiverName ||
+        matchedAccount?.accountHolderName ||
+        orgDup.payerName ||
+        'SADA';
 
       const dupMessage = buildDuplicateMessage({
         ownerName,
@@ -157,9 +165,29 @@ export const processVerification = async (options: VerificationRequest): Promise
           timings: { dbMs: dbLookupMs, bankMs: 0 }
         };
       }
+
+      const matchedAccount = (registeredAccounts || []).find((a: any) =>
+        priorRecord.receivingAccount && (
+          a.accountNumber === priorRecord.receivingAccount ||
+          receiptAccountMatchesRegistered(priorRecord.receivingAccount, a.accountNumber)
+        )
+      ) || (registeredAccounts || [])[0];
+
+      const receiverName =
+        (priorRecord as any).receiverName ||
+        matchedAccount?.accountHolderName ||
+        undefined;
+
+      const enrichedPrior = {
+        ...priorRecord,
+        receiverName,
+        receiverParty: receiverName,
+        to_name: receiverName,
+      };
+
       return {
         status: 200,
-        result: priorRecord,
+        result: enrichedPrior,
         timings: { dbMs: dbLookupMs, bankMs: 0 }
       };
     }
@@ -278,6 +306,17 @@ export const processVerification = async (options: VerificationRequest): Promise
     const storedAmount = isSuccessful ? finalAmount : 0;
     const now = new Date();
     const matchedReceiver = providerResult.receiverAccount || expectedReceiverAccount || null;
+    const matchedAccount = (registeredAccounts || []).find((a: any) =>
+      matchedReceiver && (
+        a.accountNumber === matchedReceiver ||
+        receiptAccountMatchesRegistered(matchedReceiver, a.accountNumber)
+      )
+    ) || (registeredAccounts || [])[0];
+
+    const resolvedReceiverName =
+      providerResult.receiverName ||
+      matchedAccount?.accountHolderName ||
+      undefined;
 
     const tTx0 = Date.now();
 
@@ -352,6 +391,12 @@ export const processVerification = async (options: VerificationRequest): Promise
         if (providerResult.receiverAccount) (record as any).receivingAccount = providerResult.receiverAccount;
         if (providerResult.payerName) (record as any).payerName = providerResult.payerName;
         if (providerResult.reference) (record as any).txnReference = providerResult.reference;
+      }
+
+      if (resolvedReceiverName) {
+        (record as any).receiverName = resolvedReceiverName;
+        (record as any).receiverParty = resolvedReceiverName;
+        (record as any).to_name = resolvedReceiverName;
       }
 
       return record;

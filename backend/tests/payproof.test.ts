@@ -478,5 +478,50 @@ describe('PayProof Telebirr Verification Service', () => {
       assert(tgMsg.includes('ቀድሞውኑ በ*Beki Plc* በ`2026-11-19T12:59:08Z` ተረጋግጧል\\. የመጠን ማረጋገጫ፦ *ETB 5\\.00*\\።'));
       assert(tgMsg.includes('👥 *SADA*'));
     });
+
+    it('formats verified CBE receipt with receiver name (SADA) instead of masked account (1********0763)', async () => {
+      const { formatVerificationResult, extractPartyName } = await import('../src/telegram/formatter');
+      const targetDate = new Date('2026-11-26T15:14:00.000Z'); // 18:14 in Africa/Addis_Ababa
+      const verifyDate = new Date(targetDate.getTime());
+
+      const cbeResult = {
+        status: 'VERIFIED',
+        provider: 'CBE',
+        txnReference: 'FT262996TDJF',
+        amount: 10,
+        settledAmount: 10,
+        receivingAccount: '1********0763',
+        receiverName: 'SADA',
+        transactionDate: targetDate.toISOString(),
+        verifiedAt: verifyDate.toISOString(),
+      };
+
+      assert.strictEqual(extractPartyName(cbeResult), 'SADA');
+
+      const formatted = formatVerificationResult({ httpStatus: 200, result: cbeResult });
+
+      assert(formatted.includes('✅ *Verified / ተረጋግጧል*'));
+      assert(formatted.includes('🏦 `CBE`'));
+      assert(formatted.includes('💰 *ETB 10*'));
+      assert(formatted.includes('🔖 `FT262996TDJF`'));
+      assert(formatted.includes('👥 *SADA*'));
+      assert(!formatted.includes('👥 *1********0763*'));
+      assert(formatted.includes('26 Nov 2026, 6:14 PM'));
+    });
+
+    it('extracts receiver name from accountHolderName when receiverName is not set and receivingAccount is masked', async () => {
+      const { extractPartyName } = await import('../src/telegram/formatter');
+
+      const cbeFallbackResult = {
+        status: 'VERIFIED',
+        provider: 'CBE',
+        txnReference: 'FT262996TDJF',
+        amount: 10,
+        receivingAccount: '1********0763',
+        accountHolderName: 'SADA',
+      };
+
+      assert.strictEqual(extractPartyName(cbeFallbackResult), 'SADA');
+    });
   });
 });

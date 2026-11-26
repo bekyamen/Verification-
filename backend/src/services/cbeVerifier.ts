@@ -15,7 +15,7 @@ function normalizeCbeAccount(raw: string): string {
  * Returns true if the receiver account from the receipt matches one of our registered accounts.
  * Handles masked strings (***1234), partial trailing matches, and prefix normalization.
  */
-function receiptAccountMatchesRegistered(receiptAccount: string, registeredAccount: string): boolean {
+export function receiptAccountMatchesRegistered(receiptAccount: string, registeredAccount: string): boolean {
   if (!receiptAccount || !registeredAccount) return false;
 
   const aNorm = normalizeCbeAccount(registeredAccount);
@@ -39,6 +39,15 @@ function receiptAccountMatchesRegistered(receiptAccount: string, registeredAccou
   if (rNorm.includes(aNorm) || aNorm.includes(rNorm)) return true;
 
   return false;
+}
+
+/** Check if a candidate string looks like a person or company name rather than a masked account number or digits */
+export function isLikelyPersonOrBusinessName(name?: string | null): boolean {
+  if (!name || typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  if (trimmed.length < 2) return false;
+  const digitsAndStars = trimmed.replace(/[^0-9*]/g, '').length;
+  return digitsAndStars / trimmed.length <= 0.5;
 }
 
 /** Fuzzy name match: share at least one "significant" word (>2 chars). */
@@ -216,11 +225,16 @@ export class CbeVerifier implements ProviderVerifier {
       logger.warn(`[CbeVerifier] ${warningMessage}`);
     }
 
+    const resolvedReceiverName =
+      (isLikelyPersonOrBusinessName(res.receiver) ? res.receiver?.trim() : undefined) ||
+      (isLikelyPersonOrBusinessName(account.accountHolderName) ? account.accountHolderName.trim() : undefined);
+
     return {
       status: 'VERIFIED',
       amountExtracted: res.amount || payload.amount || 0,
       payerName: res.payer || undefined,
       receiverAccount: receiverAccount || undefined,
+      receiverName: resolvedReceiverName,
       date: res.date || undefined,
       reference: res.reference || fallbackRef || payload.txnReference,
       message: warningMessage,

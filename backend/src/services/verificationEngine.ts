@@ -72,6 +72,7 @@ export interface ProviderVerificationResult {
   message?: string;
   code?: string;
   receiverAccount?: string;
+  receiverName?: string;
   date?: Date;
   reference?: string;
 }
