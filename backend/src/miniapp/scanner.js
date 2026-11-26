@@ -156,6 +156,9 @@
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     if (!vw || !vh) return null;
+    if (mode === 'full') {
+      return { sx: 0, sy: 0, sw: vw, sh: vh };
+    }
 
     const vRect = video.getBoundingClientRect();
     if (vRect.width <= 0 || vRect.height <= 0) {
@@ -867,8 +870,12 @@
     const video = el('scanner-video');
     if (!video || !video.videoWidth || video.readyState < 2) return;
 
-    const crop = computeStageCrop(video, 'stage', 0.08);
-    if (!crop) return;
+    const crop = computeStageCrop(video, 'full', 0) || {
+      sx: 0,
+      sy: 0,
+      sw: video.videoWidth,
+      sh: video.videoHeight,
+    };
 
     const isPortraitCrop = crop.sh >= crop.sw;
     const W = isPortraitCrop ? 160 : 224;
@@ -1148,7 +1155,7 @@
     }
 
     try {
-      const crop = computeStageCrop(video, 'visible', 0) || {
+      const crop = computeStageCrop(video, 'full', 0) || {
         sx: 0,
         sy: 0,
         sw: video.videoWidth,
