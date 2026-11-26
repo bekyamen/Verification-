@@ -27,6 +27,7 @@ import type express from 'express';
 import axios from 'axios';
 import https from 'https';
 import { getRegisteredUser, TelegramUserContext } from './auth';
+import { normalizePhone } from '../controllers/auth.controller';
 import { formatVerificationResult, formatStatusLine } from './formatter';
 import { runImageVerification } from '../services/imageVerify.service';
 import { processVerification } from '../services/verification.service';
@@ -557,6 +558,46 @@ export function createBot(): Bot {
     }
   });
 
+  // ── Contact handler: quietly record and delete Telegram shared contacts ─────
+  bot.on('message:contact', async (ctx) => {
+    try {
+      const contact = ctx.message.contact;
+      const fromId = ctx.from?.id;
+
+      if (contact && fromId) {
+        const telegramUserId = BigInt(fromId);
+        const rawPhone = contact.phone_number;
+        const normalized = normalizePhone(rawPhone);
+
+        // Save contact to telegram_contacts table quietly for login/registration
+        await prisma.telegramContact.upsert({
+          where: { telegramUserId },
+          update: {
+            phoneNumber: normalized,
+            firstName: contact.first_name || null,
+            lastName: contact.last_name || null,
+          },
+          create: {
+            telegramUserId,
+            phoneNumber: normalized,
+            firstName: contact.first_name || null,
+            lastName: contact.last_name || null,
+          },
+        }).catch((err: any) => {
+          logger.warn(`[telegram] could not upsert contact from message: ${err.message}`);
+        });
+
+        logger.info(`[telegram] Contact shared by user ${fromId} (${normalized}). Silently ignoring and deleting message.`);
+      }
+
+      // Automatically delete the contact message so it does not clutter the user's chat
+      await ctx.deleteMessage().catch(() => {});
+    } catch (err: any) {
+      logger.warn(`[telegram] Error handling contact message: ${err.message}`);
+    }
+    // Absolutely do NOT reply or send any message to the chat
+  });
+
   // ── Photo handler: receipt screenshot ──────────────────────────────────────
   bot.on('message:photo', async (ctx) => {
     const fromId  = ctx.from?.id;
@@ -677,6 +718,16 @@ export function createBot(): Bot {
     const fromId = ctx.from?.id;
 
     if (text.startsWith('/')) return;
+
+    // Ignore contact cards, shared phone numbers, or "[ Contact ]" messages sent into chat
+    if (
+      /^\[\s*Contact\s*\]/i.test(text) ||
+      /^(?:\+251|0)?[97]\d{8}$/.test(text.replace(/[\s\-()]/g, ''))
+    ) {
+      logger.info(`[telegram] Silently ignoring contact text message from fromId=${fromId}`);
+      await ctx.deleteMessage().catch(() => {});
+      return;
+    }
 
     // ── Wizard intercept (account registration) ────────────────────────────────
     const session = getWizard(chatId);
