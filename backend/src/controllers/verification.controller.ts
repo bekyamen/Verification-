@@ -10,6 +10,7 @@ import { verifyTelebirrReceiptWithPayProof } from '../services/payproof.service'
 import prisma from '../utils/prisma';
 import logger from '../utils/logger';
 import { buildDuplicateMessage } from '../utils/duplicateFormatter';
+import { notifyAdminsOnCashierVerification } from '../services/notification.service';
 
 async function resolveBranchAndCashier(req: AuthenticatedRequest): Promise<{ cashierId: string; branchId: string } | null> {
   const cashierId = req.cashierId || req.user?.userId;
@@ -649,6 +650,16 @@ export const verifyReceiptPayProof = async (req: AuthenticatedRequest, res: Resp
       } catch (dbErr: any) {
         console.warn('[PayProof] Warning: Could not persist verification record to DB:', dbErr.message);
       }
+    }
+
+    if (savedRecord && savedRecord.status === 'VERIFIED' && context?.branchId && context?.cashierId) {
+      void notifyAdminsOnCashierVerification({
+        branchId: context.branchId,
+        cashierId: context.cashierId,
+        result: savedRecord,
+      }).catch((err) => {
+        logger.warn(`[admin-notify] Failed to notify admin: ${err.message}`);
+      });
     }
 
     let httpStatus = 200;

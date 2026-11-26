@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { VerificationRequest, verifierRegistry } from './verificationEngine';
 import { accountsCache } from '../utils/verifyCache';
 import { buildDuplicateMessage } from '../utils/duplicateFormatter';
+import { notifyAdminsOnCashierVerification } from './notification.service';
 
 export const processVerification = async (options: VerificationRequest): Promise<{
   status: number;
@@ -363,6 +364,16 @@ export const processVerification = async (options: VerificationRequest): Promise
     }
     if (result.status === 'INVALID_RECEIPT' || result.status === 'FAILED_UPSTREAM') {
       return { status: 422, result, timings: { dbMs: totalDbMs, bankMs } };
+    }
+
+    if (result.status === 'VERIFIED') {
+      void notifyAdminsOnCashierVerification({
+        branchId,
+        cashierId,
+        result,
+      }).catch((err) => {
+        console.error('[admin-notify] Background notification error:', err);
+      });
     }
 
     return { status: 200, result, timings: { dbMs: totalDbMs, bankMs } };
