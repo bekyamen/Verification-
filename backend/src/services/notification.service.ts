@@ -84,14 +84,12 @@ export async function notifyAdminsOnCashierVerification({
     // 3. Format the verification response message
     const baseCard = formatVerificationResult({ httpStatus: 200, result });
     const cashierName = cashier.fullName || 'Cashier';
-    const branchName = cashier.branch?.name || 'Main Branch';
 
     // Append cashier attribution footer
     const adminMessage =
       `${baseCard}\n\n` +
       `━━━━━━━━━━━━━━━━━━━\n` +
-      `👤 *Cashier:* ${esc(cashierName)}\n` +
-      `📍 *Branch:* ${esc(branchName)}`;
+      `👤 *Cashier:* ${esc(cashierName)}`;
 
     // 4. Send notification to each admin via Telegram Bot API
     for (const admin of admins) {
