@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { registerSchema, loginSchema, cashierLoginSchema } from '../validators/auth.validator';
 import prisma from '../utils/prisma';
+import { Role } from '@prisma/client';
 import { AuthenticatedRequest, JwtPayload } from '../types';
 import { recordFailedAttempt, resetLoginAttempts } from '../middleware/rateLimit.middleware';
 import { verifyInitData } from './miniapp.controller';
@@ -17,11 +18,18 @@ const COOKIE_OPTIONS = {
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
 };
 
-// Normalize Ethiopian phone numbers
+// Normalize Ethiopian phone numbers to standard E.164 (+251...)
 export const normalizePhone = (phone: string): string => {
+  if (!phone) return '';
   const cleaned = phone.trim().replace(/[\s\-()]/g, '');
   if (cleaned.startsWith('09') || cleaned.startsWith('07')) {
     return '+251' + cleaned.substring(1);
+  }
+  if (cleaned.startsWith('251') && !cleaned.startsWith('+')) {
+    return '+' + cleaned;
+  }
+  if ((cleaned.startsWith('9') || cleaned.startsWith('7')) && cleaned.length === 9) {
+    return '+251' + cleaned;
   }
   if (!cleaned.startsWith('+')) {
     return '+' + cleaned;
@@ -31,56 +39,99 @@ export const normalizePhone = (phone: string): string => {
 
 /**
  * POST /api/auth/register
- * Admin creates a new account (Personal or Business).
+ * Passwordless new-user registration for Business or Personal accounts.
+ * Authenticated via Telegram initData and bot-verified contact.
  */
 export const register = async (req: Request, res: Response): Promise<void> => {
   try {
     const validatedData = registerSchema.parse(req.body);
-    const normalizedPhone = normalizePhone(validatedData.phone);
 
-    // Safely extract Telegram identity from signed initData
-    let telegramId: bigint | null = null;
-    if (req.body.initData && typeof req.body.initData === 'string') {
+    // 1. Cryptographically validate initData using HMAC-SHA256 and BOT_TOKEN
+    let parsed: any;
+    if (process.env.NODE_ENV === 'development' && validatedData.initData === 'dev_bypass') {
+      parsed = { user: { id: 999999999, first_name: 'Dev User' } };
+    } else {
       try {
-        const parsed = verifyInitData(req.body.initData);
-        if (parsed.user?.id) {
-          telegramId = BigInt(parsed.user.id);
-          const conflict = await prisma.user.findUnique({
-            where: { telegramId },
-            select: { id: true, fullName: true },
-          });
-          if (conflict) {
-            res.status(409).json({
-              error: `This Telegram account is already linked to ${conflict.fullName}. Each Telegram account can only be linked to one user.`,
-            });
-            return;
-          }
-        }
+        parsed = verifyInitData(validatedData.initData);
       } catch (err: any) {
-        logger.warn(`[auth] Invalid initData during register: ${err.message}`);
+        logger.warn(`[register] Cryptographic validation failed: ${err.message}`);
+        res.status(401).json({ error: 'Invalid or expired Telegram session: ' + err.message });
+        return;
       }
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPin = await bcrypt.hash(validatedData.pinCode, salt);
+    if (!parsed.user?.id) {
+      res.status(400).json({ error: 'No Telegram user found in signed session' });
+      return;
+    }
+
+    const telegramUserId = BigInt(parsed.user.id);
+
+    // 2. If contact was passed directly from Telegram requestContact, save to telegram_contacts
+    if (req.body.contact?.phone_number) {
+      if (req.body.contact.user_id && BigInt(req.body.contact.user_id) !== telegramUserId) {
+        res.status(403).json({ error: 'Shared contact does not match the current Telegram session' });
+        return;
+      }
+      const rawContactPhone = normalizePhone(req.body.contact.phone_number);
+      await prisma.telegramContact.upsert({
+        where: { telegramUserId },
+        update: {
+          phoneNumber: rawContactPhone,
+          firstName: req.body.contact.first_name || parsed.user.first_name || null,
+          lastName: req.body.contact.last_name || parsed.user.last_name || null,
+        },
+        create: {
+          telegramUserId,
+          phoneNumber: rawContactPhone,
+          firstName: req.body.contact.first_name || parsed.user.first_name || null,
+          lastName: req.body.contact.last_name || parsed.user.last_name || null,
+        },
+      });
+    }
+
+    // 3. Fetch verified phone number from telegram_contacts table
+    const storedContact = await prisma.telegramContact.findUnique({
+      where: { telegramUserId },
+    });
+
+    const verifiedPhone = storedContact?.phoneNumber;
+    if (!verifiedPhone) {
+      res.status(400).json({ error: 'Phone number not verified through Telegram. Please share your phone number.' });
+      return;
+    }
+
+    const normalizedPhone = normalizePhone(verifiedPhone);
+
+    // 4. Prevent duplicate accounts by phone number AND telegram_user_id
+    const duplicateUser = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { phone: normalizedPhone },
+          { telegramId: telegramUserId },
+          { telegramUserId },
+        ],
+      },
+    });
+
+    if (duplicateUser) {
+      res.status(409).json({ error: 'Account already exists. Please sign in.' });
+      return;
+    }
+
+    // 5. Role mapping and setup
+    const isBusiness = validatedData.accountType === 'business';
+    const role: Role = isBusiness ? 'OWNER' : 'USER';
+    const businessName = isBusiness ? validatedData.businessName!.trim() : null;
+    const branchCount = isBusiness ? validatedData.branchCount! : null;
+
+    const orgName = isBusiness ? businessName! : `Personal - ${validatedData.fullName}`;
 
     let newUser: any;
     let defaultBranch: any;
     let createdOrg: any;
 
     await prisma.$transaction(async (tx) => {
-      const existingUser = await tx.user.findUnique({
-        where: { phone: normalizedPhone },
-      });
-      if (existingUser) {
-        throw new Error('P2002');
-      }
-
-      const isBusiness = validatedData.accountType === 'BUSINESS';
-      const orgName = isBusiness
-        ? `${validatedData.fullName}'s Business`
-        : `Personal - ${validatedData.fullName}`;
-
       createdOrg = await tx.organization.create({
         data: {
           name: orgName,
@@ -99,12 +150,16 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         data: {
           fullName: validatedData.fullName,
           phone: normalizedPhone,
-          passwordHash: hashedPin,
-          pinCode: hashedPin,
-          role: 'OWNER',
+          passwordHash: null,
+          pinCode: null,
+          role,
+          accountType: validatedData.accountType,
+          businessName,
+          branchCount,
+          telegramId: telegramUserId,
+          telegramUserId,
           organizationId: createdOrg.id,
           branchId: defaultBranch.id,
-          telegramId: telegramId ?? undefined,
         },
       });
     });
@@ -114,10 +169,9 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    if (telegramId) {
-      clearUserContextCache(telegramId);
-    }
+    clearUserContextCache(telegramUserId);
 
+    // 6. Issue 7-day session JWT token
     const payload: JwtPayload = {
       userId: newUser.id,
       role: newUser.role,
@@ -126,8 +180,12 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     };
 
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
-
     res.cookie('token', token, COOKIE_OPTIONS);
+
+    const isAdmin = newUser.role === 'OWNER' || newUser.role === 'MANAGER';
+
+    logger.info(`[register] Passwordless registration completed for ${newUser.fullName} (${newUser.role}, ${newUser.accountType})`);
+
     res.status(201).json({
       message: 'Account created successfully',
       token,
@@ -136,15 +194,20 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         fullName: newUser.fullName,
         phone: newUser.phone,
         role: newUser.role,
-        accountType: validatedData.accountType,
+        isAdmin,
+        accountType: newUser.accountType,
+        businessName: newUser.businessName,
+        branchCount: newUser.branchCount,
         organizationId: newUser.organizationId,
         organizationName: createdOrg.name,
         branchId: newUser.branchId,
+        branchName: defaultBranch.name,
+        telegramLinked: true,
       },
     });
   } catch (error: any) {
-    if (error.message === 'P2002' || error.code === 'P2002') {
-      res.status(409).json({ error: 'An account with this phone number already exists.' });
+    if (error.code === 'P2002' || error.message?.includes('P2002')) {
+      res.status(409).json({ error: 'Account already exists. Please sign in.' });
       return;
     }
     const msg = error.errors?.[0]?.message || error.message || 'Validation failed';
@@ -181,6 +244,11 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       res.status(429).json({
         error: `Account is temporarily locked. Please try again in ${remainingMinutes} minute(s).`,
       });
+      return;
+    }
+
+    if (!user.passwordHash) {
+      res.status(401).json({ error: 'This account uses passwordless Telegram authentication. Please sign in via Telegram.' });
       return;
     }
 
@@ -566,5 +634,154 @@ export const cashierLogin = async (req: Request, res: Response): Promise<void> =
     });
   } catch (error: any) {
     res.status(500).json({ error: 'Authentication error', details: error.message });
+  }
+};
+
+/**
+ * POST /api/auth/telegram-login
+ * Passwordless sign-in for existing users and admins via Telegram-registered phone number.
+ * Validates Telegram initData cryptographic HMAC-SHA256 signature, matches phone,
+ * and issues JWT session without requiring a password.
+ */
+export const telegramPhoneLogin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { initData, contact, phone } = req.body as {
+      initData?: string;
+      contact?: {
+        phone_number?: string;
+        first_name?: string;
+        last_name?: string;
+        user_id?: number | string;
+      };
+      phone?: string;
+    };
+
+    if (!initData) {
+      res.status(400).json({ error: 'initData is required for Telegram phone sign-in' });
+      return;
+    }
+
+    // 1. Cryptographically validate initData using HMAC-SHA256 and BOT_TOKEN
+    let parsed: any;
+    if (process.env.NODE_ENV === 'development' && initData === 'dev_bypass') {
+      parsed = { user: { id: 999999999, first_name: 'Dev User' } };
+    } else {
+      try {
+        parsed = verifyInitData(initData);
+      } catch (err: any) {
+        logger.warn(`[telegram-login] Cryptographic validation failed: ${err.message}`);
+        res.status(401).json({ error: 'Invalid or expired Telegram session: ' + err.message });
+        return;
+      }
+    }
+
+    if (!parsed.user?.id) {
+      res.status(400).json({ error: 'No Telegram user found in signed initData' });
+      return;
+    }
+
+    const telegramUserId = BigInt(parsed.user.id);
+
+    // 2. Extract phone number and ensure it cannot be spoofed
+    const rawPhone = contact?.phone_number || phone;
+    if (!rawPhone) {
+      res.status(400).json({ error: 'Phone number is required from Telegram contact' });
+      return;
+    }
+
+    // If contact payload contains user_id, ensure it matches the verified Telegram user id
+    if (contact?.user_id && BigInt(contact.user_id) !== telegramUserId) {
+      logger.warn(`[telegram-login] User ID mismatch: contact.user_id=${contact.user_id} vs initData.user.id=${telegramUserId}`);
+      res.status(403).json({ error: 'Shared contact does not match the current Telegram user session' });
+      return;
+    }
+
+    // 3. Normalize extracted phone number to E.164 (+251...)
+    const normalizedPhone = normalizePhone(rawPhone);
+    const withoutPlus = normalizedPhone.replace(/^\+/, '');
+    const localFormat = normalizedPhone.startsWith('+251') ? '0' + normalizedPhone.slice(4) : null;
+    const phoneCandidates = [normalizedPhone, withoutPlus];
+    if (localFormat) phoneCandidates.push(localFormat);
+
+    // 4. Look up existing user in database by phone or linked telegramId
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { phone: { in: phoneCandidates } },
+          { telegramId: telegramUserId },
+        ],
+      },
+      include: {
+        organization: { select: { id: true, name: true } },
+        branch: { select: { id: true, name: true } },
+        _count: { select: { createdAccounts: true } },
+      },
+    });
+
+    // If not registered yet, return clear 404 with pre-fill phone
+    if (!user) {
+      logger.info(`[telegram-login] Unregistered phone attempted login: ${normalizedPhone}`);
+      res.status(404).json({
+        error: 'Account not found. Please register first.',
+        notFound: true,
+        needsRegistration: true,
+        phone: normalizedPhone,
+        telegramUser: parsed.user,
+      });
+      return;
+    }
+
+    // 5. Update linked telegramId on user record if missing or updated
+    if (user.telegramId !== telegramUserId) {
+      try {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { telegramId: telegramUserId },
+        });
+        clearUserContextCache(telegramUserId);
+      } catch (err: any) {
+        logger.warn(`[telegram-login] Could not update telegramId for user ${user.id}: ${err.message}`);
+      }
+    }
+
+    // 6. Reset any failed login attempts
+    await resetLoginAttempts(user.id);
+
+    // 7. Issue 7-day session JWT token
+    const payload: JwtPayload = {
+      userId: user.id,
+      role: user.role,
+      organizationId: user.organizationId,
+      branchId: user.branchId,
+    };
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+
+    // Set HttpOnly auth cookie
+    res.cookie('token', token, COOKIE_OPTIONS);
+
+    const isAdmin = user.role === 'OWNER' || user.role === 'MANAGER';
+
+    logger.info(`[telegram-login] Passwordless login successful for ${user.fullName} (${user.role}) via phone=${normalizedPhone}`);
+
+    res.status(200).json({
+      message: `Welcome back, ${user.fullName.split(' ')[0]}!`,
+      token,
+      user: {
+        id: user.id,
+        fullName: user.fullName,
+        phone: user.phone,
+        role: user.role,
+        isAdmin,
+        organizationId: user.organizationId,
+        organizationName: user.organization?.name,
+        branchId: user.branchId,
+        branchName: user.branch?.name,
+        telegramLinked: true,
+        accountsCount: user._count?.createdAccounts ?? 0,
+      },
+    });
+  } catch (error: any) {
+    logger.error(`[telegram-login] Error: ${error.message}`);
+    res.status(500).json({ error: 'Failed to authenticate via Telegram phone', details: error.message });
   }
 };

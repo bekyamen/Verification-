@@ -493,70 +493,72 @@
   </div>
 </div>
 
-<!-- ── Register screen (Admin Sign Up) ────────────────────────────── -->
+<!-- ── Register screen (Passwordless Sign Up) ────────────────────────── -->
 <div id="screen-register" class="screen">
   <div style="padding: 28px 16px 20px; text-align: center;">
-    <div style="font-size: 40px; margin-bottom: 8px;">🏢</div>
-    <h1 style="font-size: 24px; font-weight: 800;">Business Owner Sign Up</h1>
+    <div style="font-size: 40px; margin-bottom: 8px;">✨</div>
+    <h1 style="font-size: 24px; font-weight: 800;">Create Account</h1>
     <p style="font-size: 14px; color: var(--hint); margin-top: 4px;">
-      Create an account to configure receiving accounts & cashiers.
+      Fast passwordless registration with your Telegram identity
     </p>
   </div>
 
   <div class="card" style="padding: 18px 16px;">
-    <label>Full Name <span class="req">*</span></label>
-    <input id="reg-name" type="text" autocomplete="name" placeholder="Dawit Haile" />
+    <!-- a) Your Full Name -->
+    <label>Your Full Name <span class="req">*</span></label>
+    <input id="reg-name" type="text" autocomplete="name" placeholder="Dawit Haile" oninput="validateRegForm()" />
     <div id="reg-name-err" class="field-error"></div>
     <div class="form-gap"></div>
 
+    <!-- b) Phone Number (Telegram Verified) -->
     <label>Phone Number <span class="req">*</span></label>
-    <div style="display:flex;gap:8px">
-      <input id="reg-phone" type="tel" placeholder="0912345678" style="flex:1" autocomplete="tel" />
-      <button class="btn ghost" style="width:auto;padding:12px 14px;font-size:18px" id="share-phone-btn" title="Use Telegram Phone">📱</button>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <input id="reg-phone" type="text" placeholder="Share phone via Telegram" readonly style="flex:1;background:rgba(255,255,255,0.06);cursor:default;" />
+      <button class="btn" style="width:auto;padding:12px 14px;white-space:nowrap;font-size:13px;font-weight:700;background:linear-gradient(135deg, #0088cc 0%, #00a2ff 100%);color:#fff;" id="share-phone-btn" type="button" onclick="requestTelegramPhone()">
+        <span id="share-phone-text">📱 Share Phone</span>
+      </button>
     </div>
+    <div id="reg-phone-verified-badge" style="display:none;font-size:12px;color:#30d158;margin-top:4px;font-weight:600;">✓ Verified through Telegram</div>
     <div id="reg-phone-err" class="field-error"></div>
-    <div class="form-hint">Accepts 09..., 07..., or +2519...</div>
     <div class="form-gap"></div>
 
+    <!-- c) Account Type (Segmented control) -->
     <label>Account Type <span class="req">*</span></label>
-    <select id="reg-type">
-      <option value="BUSINESS">Business (Shop, Merchant, Company)</option>
-      <option value="PERSONAL">Personal</option>
-    </select>
-    <div class="form-gap"></div>
-
-    <label>4-Digit PIN <span class="req">*</span></label>
-    <div class="pin-tap-area" id="reg-pin-area" tabindex="0">
-      <div style="font-size: 12px; color: var(--hint); margin-bottom: 4px;">Tap to enter 4-digit PIN</div>
-      <div class="pin-wrap" id="reg-pin-dots"></div>
+    <div class="tab-pills" style="margin-bottom:0;" id="reg-type-toggle">
+      <button id="reg-type-business" type="button" class="tab-pill active" onclick="setRegAccountType('business')">🏢 Business</button>
+      <button id="reg-type-personal" type="button" class="tab-pill" onclick="setRegAccountType('personal')">👤 Personal</button>
     </div>
-    <input id="reg-pin-input" class="pin-input-hidden" type="number" inputmode="numeric" maxlength="4" />
-    <div id="reg-pin-err" class="field-error"></div>
+    <input type="hidden" id="reg-type" value="business" />
     <div class="form-gap"></div>
 
-    <label>Confirm PIN <span class="req">*</span></label>
-    <div class="pin-tap-area" id="reg-pin2-area" tabindex="0">
-      <div style="font-size: 12px; color: var(--hint); margin-bottom: 4px;">Tap to re-enter PIN</div>
-      <div class="pin-wrap" id="reg-pin2-dots"></div>
+    <!-- d) Business Fields (visible only when Business is selected) -->
+    <div id="reg-business-fields">
+      <label>Business Name <span class="req">*</span></label>
+      <input id="reg-biz-name" type="text" placeholder="e.g. Haile Trading Enterprise" oninput="validateRegForm()" />
+      <div id="reg-biz-name-err" class="field-error"></div>
+      <div class="form-gap"></div>
+
+      <label>Number of Branches <span class="req">*</span></label>
+      <input id="reg-branch-count" type="number" min="1" max="500" value="1" oninput="validateRegForm()" />
+      <div id="reg-branch-count-err" class="field-error"></div>
+      <div class="form-gap"></div>
     </div>
-    <input id="reg-pin2-input" class="pin-input-hidden" type="number" inputmode="numeric" maxlength="4" />
-    <div id="reg-pin2-err" class="field-error"></div>
-    <div class="form-gap"></div>
 
-    <button class="btn" id="reg-submit-btn" onclick="submitRegister()">Create Account</button>
+    <!-- Submit Button (disabled until all required fields valid & phone verified) -->
+    <button class="btn" id="reg-submit-btn" disabled onclick="submitRegister()" style="margin-top:8px;">Create Account</button>
     <div style="text-align: center; margin-top: 14px; font-size: 13px; color: var(--hint);">
       Already have an account? <a href="#" onclick="showScreen('login');return false" style="color: var(--link); text-decoration: none; font-weight: 600;">Sign in</a>
     </div>
   </div>
 </div>
 
-<!-- ── Login screen (Admin & Cashier) ─────────────────────────────── -->
+<!-- ── Login screen (Passwordless Admin & Cashier Password) ───────────── -->
 <div id="screen-login" class="screen">
   <div style="padding: 28px 16px 16px; text-align: center;">
     <div style="font-size: 40px; margin-bottom: 8px;">🔐</div>
     <h1 style="font-size: 24px; font-weight: 800;">Sign In</h1>
     <p style="font-size: 14px; color: var(--hint); margin-top: 4px;">
-      Choose your role to continue
+      Sign in passwordless with Telegram or enter cashier password
     </p>
   </div>
 
@@ -566,24 +568,24 @@
     <button id="login-tab-cashier" class="tab-pill" onclick="switchLoginMode('cashier')">Cashier (Staff)</button>
   </div>
 
-  <!-- Admin Form -->
-  <div id="login-form-admin" class="card" style="padding: 18px 16px;">
-    <label>Phone Number <span class="req">*</span></label>
-    <input id="login-phone" type="tel" placeholder="0912345678" autocomplete="tel" />
-    <div id="login-phone-err" class="field-error"></div>
-    <div class="form-gap"></div>
+  <!-- Admin Sign In (1-Tap Passwordless Telegram) -->
+  <div id="login-form-admin" class="card" style="padding: 20px 16px; text-align: center;">
+    <p style="font-size: 14px; color: var(--hint); margin-bottom: 16px; line-height: 1.4;">
+      Administrators sign in instantly using their Telegram-verified phone number. No passwords or PINs required.
+    </p>
 
-    <label>4-Digit PIN <span class="req">*</span></label>
-    <div class="pin-tap-area" id="login-pin-area" tabindex="0">
-      <div style="font-size: 12px; color: var(--hint); margin-bottom: 4px;">Tap to enter 4-digit PIN</div>
-      <div class="pin-wrap" id="login-pin-dots"></div>
+    <button class="btn" id="btn-tg-phone-login" onclick="signInWithTelegramPhone()" style="display:flex;align-items:center;justify-content:center;gap:10px;background:linear-gradient(135deg, #0088cc 0%, #00a2ff 100%);padding:14px;font-size:15px;font-weight:700;">
+      <span id="tg-login-icon" style="font-size:18px;">✈️</span>
+      <span id="tg-login-spinner" style="display:none;" class="spinner-sm"></span>
+      <span id="tg-login-text">Sign In with Telegram</span>
+    </button>
+
+    <div id="tg-not-found-banner" style="display:none;margin-top:14px;padding:14px;background:rgba(255,149,0,0.12);border:1px solid var(--accent);border-radius:10px;text-align:center;">
+      <p id="tg-not-found-msg" style="font-size:13px;margin-bottom:8px;font-weight:600;color:var(--text);">Account not found. Please register first.</p>
+      <button class="btn btn-sm" onclick="goToRegisterFromNotFound()" style="font-size:13px;">Register with This Number</button>
     </div>
-    <input id="login-pin-input" class="pin-input-hidden" type="number" inputmode="numeric" maxlength="4" />
-    <div id="login-pin-err" class="field-error"></div>
-    <div class="form-gap"></div>
 
-    <button class="btn" id="login-admin-btn" onclick="submitAdminLogin()">Sign In as Admin</button>
-    <div style="text-align: center; margin-top: 14px; font-size: 13px; color: var(--hint);">
+    <div style="text-align: center; margin-top: 20px; font-size: 13px; color: var(--hint);">
       New business owner? <a href="#" onclick="showScreen('register');return false" style="color: var(--link); text-decoration: none; font-weight: 600;">Create account</a>
     </div>
   </div>

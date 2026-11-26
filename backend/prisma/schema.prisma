@@ -36,10 +36,14 @@ model User {
   branchId        String?
   fullName        String
   phone           String                  @unique
-  passwordHash    String
+  passwordHash    String?
   pinCode         String?
   role            Role                    @default(CASHIER)
+  accountType     String                  @default("personal") @map("account_type")
+  businessName    String?                 @map("business_name")
+  branchCount     Int?                    @map("branch_count")
   telegramId      BigInt?                 @unique
+  telegramUserId  BigInt?                 @unique @map("telegram_user_id")
   loginAttempts   Int                     @default(0)
   lockedUntil     DateTime?
   createdAt       DateTime                @default(now())
@@ -112,6 +116,17 @@ enum Role {
   OWNER
   MANAGER
   CASHIER
+  USER
+}
+
+model TelegramContact {
+  telegramUserId BigInt   @id @map("telegram_user_id")
+  phoneNumber    String   @map("phone_number")
+  firstName      String?  @map("first_name")
+  lastName       String?  @map("last_name")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("telegram_contacts")
 }
 
 enum BankName {

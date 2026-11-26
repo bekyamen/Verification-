@@ -265,25 +265,9 @@ function initPin(areaId, dotsId, inputId) {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
-  initPin('reg-pin-area',   'reg-pin-dots',   'reg-pin-input');
-  initPin('reg-pin2-area',  'reg-pin2-dots',  'reg-pin2-input');
-  initPin('login-pin-area', 'login-pin-dots', 'login-pin-input');
-
-  // Share Telegram phone number button
-  const shareBtn = document.getElementById('share-phone-btn');
-  if (tg && shareBtn) {
-    shareBtn.addEventListener('click', () => {
-      tg.requestContact((valid, contact) => {
-        if (valid && contact?.contact?.phone_number) {
-          document.getElementById('reg-phone').value = contact.contact.phone_number;
-        } else {
-          toast('Could not retrieve phone number');
-        }
-      });
-    });
-  } else if (shareBtn) {
-    shareBtn.style.display = 'none';
-  }
+  if (document.getElementById('reg-pin-area')) initPin('reg-pin-area', 'reg-pin-dots', 'reg-pin-input');
+  if (document.getElementById('reg-pin2-area')) initPin('reg-pin2-area', 'reg-pin2-dots', 'reg-pin2-input');
+  if (document.getElementById('login-pin-area')) initPin('login-pin-area', 'login-pin-dots', 'login-pin-input');
 
   // Pre-fill name from Telegram user if available
   if (_tgUser?.first_name) {
@@ -292,6 +276,14 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (regNameEl) regNameEl.value = fullName;
   }
 
+  // Pre-fill verified phone from sessionStorage if available
+  const prefill = sessionStorage.getItem('prefill_phone');
+  if (prefill) {
+    setVerifiedPhone(prefill);
+  }
+
+  validateRegForm();
+
   await bootApp();
 });
 
@@ -299,9 +291,12 @@ window.addEventListener('DOMContentLoaded', async () => {
 async function bootApp() {
   showScreen('loading');
 
-  // Check if the user explicitly chose to sign out
-  const isExplicitlyLoggedOut = localStorage.getItem('cf_logged_out') === 'true';
-  if (isExplicitlyLoggedOut) {
+  // Check if the user manually signed out
+  const isManualLogout =
+    localStorage.getItem('manual_logout') === 'true' ||
+    localStorage.getItem('cf_logged_out') === 'true';
+
+  if (isManualLogout) {
     _token = null;
     _profile = null;
     localStorage.removeItem('cf_token');
@@ -327,6 +322,7 @@ async function bootApp() {
     if (ok && data.token && data.user) {
       _token = data.token;
       _profile = data.user;
+      localStorage.removeItem('manual_logout');
       localStorage.removeItem('cf_logged_out');
       localStorage.setItem('cf_token', _token);
       await navTo('verify');
@@ -341,61 +337,225 @@ async function bootApp() {
   showScreen('login');
 }
 
-// ── REGISTER (ADMIN) ─────────────────────────────────────────────────────────
-async function submitRegister() {
-  clearErrors(['reg-name-err', 'reg-phone-err', 'reg-pin-err', 'reg-pin2-err']);
+// ── REGISTRATION STATE & HELPERS ─────────────────────────────────────────────
+let _verifiedPhone = '';
+let _verifiedContact = null;
 
-  const fullName    = document.getElementById('reg-name').value.trim();
-  const phone       = document.getElementById('reg-phone').value.trim();
-  const accountType = document.getElementById('reg-type').value;
-  const pin         = document.getElementById('reg-pin-input').value;
-  const pin2        = document.getElementById('reg-pin2-input').value;
+function setVerifiedPhone(phone, contact) {
+  _verifiedPhone = (phone || '').trim();
+  if (contact) _verifiedContact = contact;
+  const phoneEl = document.getElementById('reg-phone');
+  if (phoneEl) phoneEl.value = _verifiedPhone;
+  const badge = document.getElementById('reg-phone-verified-badge');
+  if (badge) badge.style.display = _verifiedPhone ? 'block' : 'none';
+  clearErrors(['reg-phone-err']);
+  if (_verifiedPhone) {
+    sessionStorage.setItem('prefill_phone', _verifiedPhone);
+  }
+  validateRegForm();
+}
+
+function requestTelegramPhone() {
+  if (!tg) {
+    toast('Telegram WebApp not detected');
+    return;
+  }
+  if (typeof tg.requestContact !== 'function') {
+    toast('Contact sharing is not supported on this client version');
+    return;
+  }
+
+  const shareText = document.getElementById('share-phone-text');
+  if (shareText) shareText.textContent = 'Requesting...';
+  haptic('selection');
+
+  let handled = false;
+  const onContact = (status, event) => {
+    if (handled) return;
+    handled = true;
+    try { tg.offEvent?.('contactRequested', onReq); } catch (e) {}
+    if (shareText) shareText.textContent = '📱 Share Phone';
+
+    if (status === 'cancelled' || status === 'denied' || !status) {
+      haptic('error');
+      toast('Phone sharing cancelled');
+      return;
+    }
+
+    if (status === 'sent') {
+      const rawPhone =
+        event?.responseUnsafe?.contact?.phone_number ||
+        event?.contact?.phone_number ||
+        event?.phone_number || '';
+      const contact = event?.responseUnsafe?.contact || event?.contact || { phone_number: rawPhone };
+      setVerifiedPhone(rawPhone, contact);
+      haptic('success');
+      toast('Phone verified via Telegram!');
+    }
+  };
+
+  const onReq = (event) => {
+    const status = event?.status || (event?.sent ? 'sent' : 'cancelled');
+    onContact(status, event);
+  };
+
+  try { tg.onEvent?.('contactRequested', onReq); } catch (e) {}
+  try {
+    tg.requestContact((sent, event) => {
+      const status = sent ? 'sent' : 'cancelled';
+      onContact(status, event);
+    });
+  } catch (e) {
+    handled = true;
+    if (shareText) shareText.textContent = '📱 Share Phone';
+    toast('Could not request contact: ' + e.message);
+  }
+}
+
+function setRegAccountType(type) {
+  haptic('selection');
+  const btnBiz = document.getElementById('reg-type-business');
+  const btnPer = document.getElementById('reg-type-personal');
+  const hiddenType = document.getElementById('reg-type');
+  const bizFields = document.getElementById('reg-business-fields');
+
+  if (type === 'business') {
+    if (btnBiz) btnBiz.classList.add('active');
+    if (btnPer) btnPer.classList.remove('active');
+    if (hiddenType) hiddenType.value = 'business';
+    if (bizFields) bizFields.style.display = 'block';
+  } else {
+    if (btnBiz) btnBiz.classList.remove('active');
+    if (btnPer) btnPer.classList.add('active');
+    if (hiddenType) hiddenType.value = 'personal';
+    if (bizFields) {
+      bizFields.style.display = 'none';
+      const bizNameEl = document.getElementById('reg-biz-name');
+      if (bizNameEl) bizNameEl.value = '';
+      const branchCountEl = document.getElementById('reg-branch-count');
+      if (branchCountEl) branchCountEl.value = '1';
+      clearErrors(['reg-biz-name-err', 'reg-branch-count-err']);
+    }
+  }
+  validateRegForm();
+}
+
+function validateRegForm() {
+  const nameEl = document.getElementById('reg-name');
+  const typeEl = document.getElementById('reg-type');
+  const bizNameEl = document.getElementById('reg-biz-name');
+  const branchCountEl = document.getElementById('reg-branch-count');
+  const submitBtn = document.getElementById('reg-submit-btn');
+
+  const fullName = nameEl ? nameEl.value.trim() : '';
+  const accountType = typeEl ? typeEl.value : 'business';
+  const bizName = bizNameEl ? bizNameEl.value.trim() : '';
+  const branches = branchCountEl ? parseInt(branchCountEl.value, 10) : 1;
 
   let valid = true;
-  if (!fullName || fullName.length < 2) {
-    showErr('reg-name-err', 'Full name must be at least 2 characters');
+
+  if (!fullName || fullName.length < 2 || fullName.length > 60) {
     valid = false;
   }
-  if (!phone) {
-    showErr('reg-phone-err', 'Enter a valid Ethiopian phone number (e.g. 0912345678)');
+  if (!_verifiedPhone) {
     valid = false;
   }
-  if (pin.length !== 4) {
-    showErr('reg-pin-err', 'PIN must be exactly 4 digits');
-    valid = false;
+  if (accountType === 'business') {
+    if (!bizName || bizName.length < 2 || bizName.length > 80) {
+      valid = false;
+    }
+    if (isNaN(branches) || branches < 1 || branches > 500) {
+      valid = false;
+    }
   }
-  if (pin !== pin2) {
-    showErr('reg-pin2-err', 'PINs do not match');
-    valid = false;
+
+  if (submitBtn) {
+    submitBtn.disabled = !valid;
   }
-  if (!valid) {
+  return valid;
+}
+
+// ── REGISTER (PASSWORDLESS) ──────────────────────────────────────────────────
+async function submitRegister() {
+  clearErrors(['reg-name-err', 'reg-phone-err', 'reg-biz-name-err', 'reg-branch-count-err']);
+
+  const nameEl = document.getElementById('reg-name');
+  const typeEl = document.getElementById('reg-type');
+  const bizNameEl = document.getElementById('reg-biz-name');
+  const branchCountEl = document.getElementById('reg-branch-count');
+
+  const fullName = nameEl ? nameEl.value.trim() : '';
+  const accountType = typeEl ? typeEl.value : 'business';
+  const bizName = bizNameEl ? bizNameEl.value.trim() : '';
+  const branches = branchCountEl ? parseInt(branchCountEl.value, 10) : 1;
+
+  let hasErr = false;
+  if (!fullName || fullName.length < 2 || fullName.length > 60) {
+    showErr('reg-name-err', 'Full name must be between 2 and 60 characters');
+    hasErr = true;
+  }
+  if (!_verifiedPhone) {
+    showErr('reg-phone-err', 'Please verify your phone number with Telegram');
+    hasErr = true;
+  }
+  if (accountType === 'business') {
+    if (!bizName || bizName.length < 2 || bizName.length > 80) {
+      showErr('reg-biz-name-err', 'Business name must be between 2 and 80 characters');
+      hasErr = true;
+    }
+    if (isNaN(branches) || branches < 1 || branches > 500) {
+      showErr('reg-branch-count-err', 'Number of branches must be an integer between 1 and 500');
+      hasErr = true;
+    }
+  }
+
+  if (hasErr) {
     haptic('error');
     return;
   }
 
   setLoading('reg-submit-btn', true);
 
-  const { ok, data } = await api('POST', '/auth/register', {
+  const payload = {
+    initData: _tgInitData || 'dev_bypass',
     fullName,
-    phone,
-    pinCode: pin,
     accountType,
-    initData: _tgInitData || undefined,
-  });
+    contact: _verifiedContact || { phone_number: _verifiedPhone },
+  };
 
+  if (accountType === 'business') {
+    payload.businessName = bizName;
+    payload.branchCount = branches;
+  }
+
+  const { ok, data } = await api('POST', '/auth/register', payload);
   setLoading('reg-submit-btn', false);
 
   if (!ok) {
     haptic('error');
-    const msg = data.error || 'Registration failed';
-    if (msg.toLowerCase().includes('phone')) showErr('reg-phone-err', msg);
-    else toast('❌ ' + msg);
+    const msg = data?.error || 'Registration failed';
+    if (msg.includes('already exists') || msg.includes('sign in')) {
+      showErr('reg-phone-err', 'Account already exists. Please sign in.');
+      toast('Account already exists. Please sign in.');
+    } else if (msg.toLowerCase().includes('business name')) {
+      showErr('reg-biz-name-err', msg);
+    } else if (msg.toLowerCase().includes('branch')) {
+      showErr('reg-branch-count-err', msg);
+    } else if (msg.toLowerCase().includes('phone')) {
+      showErr('reg-phone-err', msg);
+    } else {
+      toast('❌ ' + msg);
+    }
     return;
   }
 
+  // Success: clear manual_logout, store token & profile
+  localStorage.removeItem('manual_logout');
+  localStorage.removeItem('cf_logged_out');
+  sessionStorage.removeItem('prefill_phone');
+
   _token = data.token;
   _profile = data.user;
-  localStorage.removeItem('cf_logged_out');
   localStorage.setItem('cf_token', _token);
 
   if (_tgInitData && _token) {
@@ -403,8 +563,14 @@ async function submitRegister() {
   }
 
   haptic('success');
-  toast('✅ Business account created!');
-  await navTo('verify');
+  toast('✅ Account created successfully!');
+
+  // Route by role: business -> admin dashboard, personal -> user dashboard
+  if (_profile.role === 'OWNER' || _profile.isAdmin) {
+    await navTo('home');
+  } else {
+    await navTo('verify');
+  }
 }
 
 // ── LOGIN SWITCH & SUBMISSIONS ───────────────────────────────────────────────
@@ -1750,7 +1916,8 @@ async function logout() {
   _recentHistoryItems = [];
   _verifySummary = { totalAmount: 0, totalCount: 0, byProvider: {} };
   _hasLoadedHistory = false;
-  // Mark explicit logout so mini-app will not blindly auto-login on startup
+  // Mark manual logout flag so mini-app will not blindly auto-login on startup
+  localStorage.setItem('manual_logout', 'true');
   localStorage.setItem('cf_logged_out', 'true');
   localStorage.removeItem('cf_token');
   localStorage.removeItem('cf_user');
@@ -1762,6 +1929,136 @@ async function logout() {
   } catch (e) {}
   toast('Signed out successfully');
   showScreen('login');
+}
+
+// ── PASSWORDLESS TELEGRAM PHONE SIGN IN ────────────────────────────────────────
+let _unregisteredDetectedPhone = '';
+
+async function signInWithTelegramPhone() {
+  localStorage.removeItem('manual_logout');
+  localStorage.removeItem('cf_logged_out');
+
+  const banner = document.getElementById('tg-not-found-banner');
+  if (banner) banner.style.display = 'none';
+
+  if (!tg) {
+    toast('Telegram WebApp not detected');
+    return;
+  }
+
+  if (typeof tg.requestContact !== 'function') {
+    toast('Contact request not supported on this client version');
+    return;
+  }
+
+  const spinner = document.getElementById('tg-login-spinner');
+  const icon = document.getElementById('tg-login-icon');
+  const text = document.getElementById('tg-login-text');
+  const btn = document.getElementById('btn-tg-phone-login');
+
+  const resetBtn = () => {
+    if (spinner) spinner.style.display = 'none';
+    if (icon) icon.style.display = 'inline';
+    if (text) text.textContent = 'Sign In with Telegram';
+    if (btn) btn.disabled = false;
+  };
+
+  if (spinner) spinner.style.display = 'inline-block';
+  if (icon) icon.style.display = 'none';
+  if (text) text.textContent = 'Signing in...';
+  if (btn) btn.disabled = true;
+
+  let completed = false;
+
+  const handleContact = async (status, event) => {
+    if (completed) return;
+    completed = true;
+
+    try { tg.offEvent?.('contactRequested', onContactReq); } catch (e) {}
+
+    if (status === 'cancelled' || status === 'denied' || !status) {
+      resetBtn();
+      haptic('error');
+      toast('Sign-in cancelled');
+      return;
+    }
+
+    if (status === 'sent') {
+      try {
+        const rawPhone =
+          event?.responseUnsafe?.contact?.phone_number ||
+          event?.contact?.phone_number ||
+          event?.phone_number;
+
+        const contact = event?.responseUnsafe?.contact || event?.contact;
+        const res = await api('POST', '/auth/telegram-login', {
+          initData: _tgInitData,
+          contact,
+          phone: rawPhone,
+        });
+
+        if (!res.ok) {
+          resetBtn();
+          haptic('error');
+          if (res.status === 404 || res.data?.notFound) {
+            _unregisteredDetectedPhone = res.data?.phone || rawPhone || '';
+            if (banner) {
+              const msgEl = document.getElementById('tg-not-found-msg');
+              if (msgEl) msgEl.textContent = 'Account not found. Please register first.';
+              banner.style.display = 'block';
+            }
+            toast('Account not found. Please register first.');
+          } else {
+            toast('❌ ' + (res.data?.error || 'Telegram sign-in failed'));
+          }
+          return;
+        }
+
+        _token = res.data.token;
+        _profile = res.data.user;
+        localStorage.removeItem('manual_logout');
+        localStorage.removeItem('cf_logged_out');
+        localStorage.setItem('cf_token', _token);
+
+        resetBtn();
+        haptic('success');
+        toast(`Welcome back, ${_profile.fullName.split(' ')[0]}!`);
+        await navTo('verify');
+      } catch (err) {
+        resetBtn();
+        haptic('error');
+        toast('❌ Connection error during sign-in');
+      }
+    } else {
+      resetBtn();
+    }
+  };
+
+  const onContactReq = (event) => {
+    const status = event?.status || (event?.sent ? 'sent' : 'cancelled');
+    handleContact(status, event);
+  };
+
+  try { tg.onEvent?.('contactRequested', onContactReq); } catch (e) {}
+
+  try {
+    tg.requestContact((sent, event) => {
+      const status = sent ? 'sent' : 'cancelled';
+      handleContact(status, event);
+    });
+  } catch (e) {
+    completed = true;
+    resetBtn();
+    toast('Could not request contact: ' + e.message);
+  }
+}
+
+function goToRegisterFromNotFound() {
+  if (_unregisteredDetectedPhone) {
+    const regPhoneEl = document.getElementById('reg-phone');
+    if (regPhoneEl) regPhoneEl.value = _unregisteredDetectedPhone;
+  }
+  showScreen('register');
 }
 
 // ── MODAL HELPERS ─────────────────────────────────────────────────────────────

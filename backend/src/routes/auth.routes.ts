@@ -6,6 +6,7 @@ import {
   cashierPasswordLogin,
   getMe,
   logout,
+  telegramPhoneLogin,
 } from '../controllers/auth.controller';
 import { loginRateLimit } from '../middleware/rateLimit.middleware';
 import { requireAuth } from '../middleware/auth.middleware';
@@ -45,6 +46,12 @@ router.get('/me', requireAuth, getMe);
  * Sign out (clears auth cookie).
  */
 router.post('/logout', logout);
+
+/**
+ * POST /api/auth/telegram-login
+ * Passwordless sign-in via Telegram contact phone number for existing users & admins.
+ */
+router.post('/telegram-login', telegramPhoneLogin);
 
 /**
  * POST /api/auth/cashier-token
